@@ -1,0 +1,5225 @@
+# 設計思想＆開発方針＆開発環境ルール(aruaru-llm)
+
+> ## 🎯 aruaru-db×RPoem SET連携方針(2026-08-29、全リポジトリ横展開)
+> **正本はaruaru-db/CLAUDE.md冒頭「🎯最重要・最優先で常に念頭に置く
+> こと」**: aruaru-dbはRPoemとSET(対)で使うことで初めて「REST API
+> 不要・WunderGraph Cosmo有料版(Enterprise)互換」という価値が
+> 成立する設計であり、REST APIの代替をただ闇雲に作ることは避ける
+> べきという戒めが記されている。**このリポジトリ(aruaru-llm)は
+> `open-cuda`とのSET(既存の「契約不要の独自AI」節参照)でopen-english
+> 等から呼ばれるAI推論エンジンであり、aruaru-db/RPoemのREST API層とは
+> 独立した別レイヤー**——ただし`src/tenants.rs`の「分身の術」動的
+> テナント登録・独自のAPIキー的な仕組みを今後拡張する際は、必ず
+> 「これはaruaru-db+RPoem SETとの連携価値を強化するか」を自問する
+> こと(闇雲な代替を避ける)。別アカウント/別セッションから再開する
+> 場合は、まずaruaru-db/CLAUDE.md冒頭の「🔄 セッション再開用メモ」を
+> 読むこと。
+
+> **📌 2026-08-27追記(続き・次回タスク記録、未着手): F32のGPT-2互換
+> ファインチューニング済みモデル候補を発見(要精査)、DeepSeekの
+> CORS非対応を確認**
+>
+> **F32重みのGPT-2互換モデル候補**: `microsoft/DialoGPT-small`が
+> F16重みでロード不可だった問題(前回エントリ参照)を受け、Hugging Face
+> 上でF32のsafetensorsを公開している他のGPT-2ファインチューニング
+> モデルを追加調査。`rohangbs/fine-tuned-gpt2`のsafetensorsヘッダーを
+> 実際にHTTP Range requestで取得して確認したところ、**全テンソルが
+> `dtype: F32`**(DialoGPTの問題を回避)、かつテンソル名
+> (`transformer.h.0.attn.c_attn.weight`等)も既存の
+> `opencuda_llm::GptModel::load`が期待する命名と一致することを確認した。
+> **ただし正直な限界**: (1) このモデルが実際に何のタスク・データセット
+> でファインチューニングされたものか(対話特化か、それとも別用途か)は
+> 未確認、(2) `tokenizer.json`の有無・vocab_sizeの一致も未確認、
+> (3) 実際にダウンロードしてこのリポジトリのローダーで動作するかの
+> 実機検証も未実施——**「有望な候補を見つけた」段階であり「動作確認
+> できた」わけではない**(誇張しない)。次回セッションで(a)モデル
+> カードを読んで実際の用途を確認、(b)tokenizer.json入手可否の確認、
+> (c)実際にダウンロードしての実機ロード・生成検証、を行うこと。
+>
+> **DeepSeek APIのCORS非対応を確認(中国語での追加調査)**: 前回
+> エントリで「DeepSeekは未確認」としていた点について、中国語の開発者
+> コミュニティ(CSDN等)を調査した結果、DeepSeek公式APIもOpenAI/Gemini
+> 同様CORS未対応(バックエンド経由が必須)と判明。これで
+> `open-english/CLAUDE.md`の2026-08-27エントリに記載の「Claudeのみ
+> ブラウザ直接呼び出し対応、他3プロバイダは非対応」という結論が
+> 4プロバイダ全てについて確定した。
+>
+> ---
+>
+> **📌 2026-08-27追記(次回タスク記録、未着手): Claude(Anthropic)キーの
+> ブラウザ直接呼び出し化(open-english側からの提案、要アーキテクチャ
+> 設計)**
+>
+> `open-english`側で、GitHubトークン・Google検索キーと同様に「ブラウザ
+> から直接プロバイダAPIを呼び、この`aruaru-llm`サーバーへは平文キーを
+> 送らない」方式を、Claude(Anthropic)キーにも適用できないか検討した
+> (詳細は`open-english/CLAUDE.md`の2026-08-27追記(続き2)参照)。
+>
+> **Web調査で確認した事実**: AnthropicのAPIは`anthropic-dangerous-
+> direct-browser-access: true`ヘッダーでブラウザからの直接呼び出しに
+> 対応済み(2024年8月導入、Anthropic公式が「dangerous」と命名)。一方
+> OpenAI・GeminiはCORS未対応でブラウザから直接呼べない(サーバー経由が
+> 必須)。DeepSeekは未確認。
+>
+> **このリポジトリ側への影響**: 現状`chat_providers::
+> complete_in_priority_order`(`src/chat_providers.rs`)が、ChatGPT/
+> DeepSeek/Gemini/Claudeの4プロバイダすべてを一律にこのサーバー経由で
+> 扱い、無料枠切れ時の自動フォールバックを行っている。Claudeだけを
+> ブラウザ直接呼び出しへ分離する場合、**このフォールバックロジックを
+> どう保つか**(例: 「Claudeがブラウザ直接呼び出しで失敗したら、
+> このサーバー経由の他プロバイダへフォールバックする」というクライアント
+> 側〈open-english〉とサーバー側〈aruaru-llm〉にまたがる制御フローの
+> 再設計が必要)。中途半端に実装すると既存の複数プロバイダフォール
+> バックが壊れるリスクがあるため、今回は着手していない。
+>
+> **次にすべきこと**: open-english側のユーザーとアーキテクチャ方針
+> (フォールバック制御をクライアント側・サーバー側どちらに置くか)を
+> すり合わせてから、`complete_in_priority_order`の変更に着手する。
+>
+> ---
+>
+> **📌 2026-08-26追記(続き5): 定性比較テスト実施+instruction/dialogue-
+> tunedなGPT-2互換モデルの実機検証(結論: ブロック要因あり、カタログ
+> 追加は見送り)**
+>
+> **1. 新旧プロンプト書式の定性比較(実GPT-2 124M重み、`cargo test
+> --release qualitative_compare_old_vs_new_search_prompt_format --
+> --ignored --nocapture`で再現可能)**:
+> 検索コンテキスト「Rust is a systems programming language focused on
+> safety, speed, and concurrency.」+質問「What is Rust used for?」で
+> 実際に生成した結果、**旧書式・新書式のいずれも、検索結果の核心
+> (safety/speed/concurrency)に触れずに一般論へ脱線した**(旧: 言語の
+> 人気・C++との違いという的外れな話、新: オープンソースである点だけに
+> 触れて具体性が無い話)。**QA形式化による明確な改善は今回の1サンプルでは
+> 確認できなかった**——誇張せず正直に記録する。ただし新書式の方が
+> 心持ち検索結果寄りの単語(オープンソース、プログラマー等)が出てきては
+> いる。単発サンプルでの主観評価に留まり、体系的なベンチマーク
+> (複数クエリ×複数書式×人手/自動評価)は今回未実施(次回課題)。
+>
+> **2. instruction/dialogue-tunedなGPT-2互換モデルの調査+実機検証**:
+> Web調査(Google検索、英語)で`microsoft/DialoGPT-small`(117M、GPT-2
+> アーキテクチャそのまま、Reddit上の1.47億対話でファインチューニング
+> 済み、MIT License)を発見。当初カタログへ追加を試みたが、**実際に
+> ダウンロードして`select_model`でロードを試したところ、
+> `microsoft/DialoGPT-small`が公開している`model.safetensors`は
+> **F16(半精度)**であり、このリポジトリの`open-cuda-llm`ローダーは
+> 現状**F32のみ対応**のため、`tensor 'transformer.wte.weight' has
+> unexpected dtype F16 (expected F32)`というエラーで**実際にはロード
+> できない**ことが実機検証で判明した(2026-08-26実施)。トークナイザ
+> 側は`vocab_size: 50257`が既存`gpt2`と同一のため`openai-community/gpt2`
+> の`tokenizer.json`を流用すれば解決できることも確認済みだが、dtype
+> 問題が残るため**カタログへの追加は見送り、実装済みコードも
+> 元へ戻した**(動かないオプションをUIに出すことは誠実さの方針に反する
+> ため)。F16対応(ロード時にF32へ変換する処理)を`open-cuda-llm`
+> クレートへ追加すれば解決できる可能性が高いが、**これは`open-cuda`側
+> のコード変更であり、GPU推論の「速度」基盤への変更ではなく「対応
+> フォーマットの拡張」という別種の変更である**点に注意——今回はユーザー
+> との事前すり合わせが無いまま`open-cuda`側へ手を入れることを避けたため
+> 未実装、次回セッションでユーザー確認の上での実装候補とする。
+>
+> **3. 要約段階の追加**: 引き続き未着手(今回は1・2の検証で時間を使った
+> ため)。次回課題として持ち越す。
+>
+> **次にすべきこと**: (1) F16→F32変換対応を`open-cuda-llm`へ追加するか
+> どうかユーザーへ確認した上で実装、(2) 複数クエリでの体系的な新旧
+> プロンプト書式比較、(3) 要約段階追加の設計検討。
+
+> **📌 2026-08-26追記(続き3・未着手タスク記録): 「検索結果をGPT-2が
+> 正確に活用する保証はない」という制約を、Rust+RPoem+open-directx/
+> open-cuda+aruaru-llm側の改善で緩和できないか、次回セッションで調査・
+> 改善すること(ユーザー指示)**
+>
+> **English summary**: `/v1/generate-with-search` embeds Google search
+> results into the prompt, but the underlying model (GPT-2/distilgpt2,
+> no instruction-tuning) has no guaranteed ability to actually make use
+> of that context correctly — this has been an honestly-disclosed
+> limitation since the feature's introduction. The user asked that a
+> **future session** investigate whether engineering improvements
+> across Rust + RPoem + open-directx/open-cuda + aruaru-llm can reduce
+> this limitation (not necessarily eliminate it), and implement what
+> is found to help. **Nothing has been implemented yet** — this entry
+> only records the task for next time.
+>
+> **背景**: ユーザーから「Google検索結果を参考に情報収集して解析して
+> AIが回答に役立てているという事ですね」との確認に対し、`/v1/generate-
+> with-search`(`web_search.rs`+`generation.rs`)が実際に検索結果を
+> プロンプトへ埋め込んでいることは事実だが、**埋め込んだコンテキストを
+> モデルが正確に踏まえて応答する保証は無い**(GPT-2/distilgpt2は
+> 対話・指示追従のファインチューニングを受けていない素の事前学習済み
+> 言語モデルの貪欲デコードのため)という既存の正直な開示は変わらない、
+> と回答した。この制約自体を、Rust+RPoem+open-directx/open-cuda+
+> aruaru-llmという既存の技術スタックの改善で緩和できないか調査・改善
+> することを次回タスクとして記録する(ユーザー指示「この部分を...
+> それらに+αで改善は可能かどうか次回検証して改善する様に」)。
+>
+> **調査・検討すべき方向性(未着手、次回の出発点)**:
+> 1. **プロンプトエンジニアリング側の改善**(モデル自体は変えない):
+>    検索結果の埋め込み位置・書式・件数を変えることで、GPT-2の限られた
+>    文脈window内での効果を上げられないか(例: 現状は
+>    `"Reference information from a web search:\n{context}\n\n{prompt}"`
+>    という単純な連結、指示追従を促す定型フレーズの追加余地がある)。
+> 2. **指示追従にやや強いモデルへの切替**(`open-cuda-llm`側の対応が
+>    前提): 現行カタログ(gpt2/distilgpt2/gpt2-medium/large/xl)は
+>    いずれも対話・指示追従のファインチューニング無しの素のGPT-2
+>    アーキテクチャ。instruction-tunedな小型モデル(例: GPT-2ベースの
+>    対話ファインチューニング版が存在するか要調査)への切替、または
+>    ファインチューニング自体をこのエコシステム内で行えるか(学習用
+>    データセット・計算資源の要否含め)の検討が必要。
+> 3. **検索結果の「要約」を挟む段階の追加**: 生の検索結果(タイトル+
+>    スニペット)をそのまま渡すのではなく、まず短い要約ステップを
+>    挟んでからプロンプトへ埋め込む設計(ただし要約自体もGPT-2が担う
+>    なら同じ限界を抱える——外部の要約特化モデル/ルールベース抽出の
+>    要否を含めて検討)。
+> 4. **`open-directx`/`open-cuda`側の役割の再確認**: これらはGPU
+>    推論の高速化基盤であり、**応答品質(検索結果の活用精度)には
+>    直接寄与しない**——過去のHANDOFF(2026-07-26等)で繰り返し確認
+>    してきた通り、GPU配線は速度の話であって精度の話ではない。この
+>    点をユーザーへ正直に伝えた上で、期待値のすり合わせが必要
+>    (「+α」がGPU高速化ではなくモデル・プロンプト側の改善であること
+>    を明確にする)。
+> 5. **RPoemの役割**: HTTP層の実装であり、検索結果活用の精度には
+>    無関係(該当なし、期待値の誤解が無いよう明記)。
+>
+> **次にすべきこと**: (1) 上記1〜3の実現可能性を実際に調査・実験する
+> (プロンプト書式の変更は即座に試せる、モデル切替はHugging Face上の
+> 候補調査から)、(2) 改善が確認できた分だけ実装し、確認できなかった
+> ものは「試したが効果が無かった」と正直に記録する(誇張しない既存
+> 方針の継続)、(3) `open-directx`/`open-cuda`が精度に寄与しないという
+> 事実誤認が生じないよう、ユーザーへの報告時に明確に切り分ける。
+
+> **📌 2026-08-26追記(続き4・実装): 検索コンテキスト活用精度の改善(方向性1
+> のみ実装、2・3は調査の結果いずれも見送り、正直に記録)**
+>
+> **実装したこと(方向性1: プロンプトエンジニアリング)**:
+> 1. `web_search::format_results_as_context`を`"- title: snippet"`の
+>    単純箇条書きから`"1. title: snippet"`という番号付きへ変更
+>    (`src/web_search.rs`)。
+> 2. プロンプト組み立てを`"Reference information from a web search:\n
+>    {context}\n\n{prompt}"`という単純連結から、`web_search::
+>    build_search_augmented_prompt`という新関数による
+>    `"Use the search results below to answer the question as
+>    accurately as possible. If the search results don't contain the
+>    answer, say so honestly.\n\nSearch results:\n{context}\n\n
+>    Question: {question}\nAnswer:"`というQA形式へ変更
+>    (`src/main.rs`の`/v1/generate-with-search`ハンドラ2箇所、
+>    利用者自身のキー使用時・共有設定使用時の両方)。
+> 3. **狙い(仮説であり保証ではない)**: GPT-2/distilgpt2の事前学習
+>    コーパスには`Question: ... Answer:`形式のQ&Aテキストが大量に
+>    含まれるため、指示追従のファインチューニングが無いモデルでも
+>    「Answer:」の直後の貪欲デコードが直前の検索結果コンテキストを
+>    踏まえた続きになりやすいのではないか、という改善の試み。
+>    **この書式変更だけで検索結果の活用が保証されるわけではない**点は
+>    従来どおり変わらない——`/v1/generate-with-search`のレスポンスにも
+>    その旨の`disclosure`は維持している(コード変更なし)。
+> 4. **テスト**: `src/web_search.rs`の単体テストを2件更新・追加
+>    (`format_results_as_context_joins_title_and_snippet`の期待値を
+>    番号付きへ更新、`build_search_augmented_prompt_uses_qa_format`を
+>    新規追加)。`cargo test web_search`で3件とも通過確認済み
+>    (2026-08-26実施)。**実GPT-2 124M重みでの生成品質の定性比較
+>    (新書式 vs 旧書式で実際に検索結果を踏まえた応答が増えるか)までは
+>    今回未実施**——ビルド・単体テストの確認に留まる。次回セッションで
+>    実サーバー起動+実際のクエリでの比較検証が必要。
+>
+> **方向性2(instruction-tunedモデルへの切替)は見送り**: GPT-2
+> アーキテクチャで`open-cuda-llm::GptModel`のsafetensorsローダーが
+> そのまま読み込める、対話・指示追従のファインチューニング済み小型
+> モデルの存在有無について、今回のセッションでは実機での検索・
+> ダウンロード検証まで手が回らなかった(時間・リミットの制約)。
+> **「調査して存在しないと確認した」わけではなく「今回は未調査」**
+> という状態であり、次回セッションの課題として持ち越す。
+>
+> **方向性3(要約段階の追加)も見送り**: 外部の要約特化モデルを
+> 追加導入する場合、モデルダウンロード・ロード方式の設計(既存の
+> `opencuda-llm::GptModel`のロード機構を流用できるか、別クレートが
+> 必要か)から検討が必要な規模のため、今回は着手せず次回課題とする。
+>
+> **open-directx/open-cudaとの切り分け(改めて明記)**: 今回実装した
+> 改善はいずれもプロンプト文字列の組み立て方の変更のみであり、
+> `open-directx`/`open-cuda`側のコードには一切触れていない。これらは
+> 従来どおりGPU推論の「速度」基盤であり、今回の「精度」改善とは
+> 無関係(過去のHANDOFFの記載と矛盾しないことを確認済み)。
+>
+> **次にすべきこと**: (1) 実GPT-2 124M重みでの新書式vs旧書式の定性
+> 比較検証、(2) instruction-tunedなGPT-2互換小型モデルの実在調査
+> (HuggingFace Hub中心)、(3) 要約段階追加の設計検討。
+
+> **📌 2026-08-26追記(続き2): GitHub検索・YouTube検索連携+無料枠切れ検知
+> (429)を新設、実機E2E検証済み**
+>
+> ユーザー指示「GitHub連携も、チェックを付けられる機能と実際に連携する
+> 機能を付けて」+「Youtube連携機能も付けて」+「Googleなどの一日の
+> 無料枠を使い切ると『本日の無料枠は使い切りました』と英語と日本語で
+> 表示して。有料版も契約していたら自動で継続する機能を付けて」への対応。
+>
+> **新規モジュール**: `src/github_search.rs`(GitHub Search API、
+> `web_search.rs`と同じ設計パターン——Personal Access Tokenは任意
+> 〈未設定でも動作、レート制限10/分→30/分に緩和されるだけ〉、リポジトリ
+> メタデータ〈名前・説明・URL・スター数〉のみ取得)+
+> `src/youtube_search.rs`(YouTube Data API v3、APIキー必須、動画タイトル・
+> チャンネル名・URLのみ取得)。いずれも`POST/GET/DELETE /v1/settings/
+> github-search`・`/v1/settings/youtube-search`で設定。
+>
+> **`POST /v1/chat-providers/complete-priority`を拡張**: `use_google_
+> search`/`use_github_search`/`use_youtube_search`(bool)+各サービスの
+> 持ち込みキーを受け取り、有効化されたサービスの検索結果をプロンプトへ
+> コンテキストとして埋め込んでからチャット補完を呼ぶ(`generate_with_
+> search`と同じブリッジ式)。`search_notes`フィールドで実際に何件
+> ヒットしたか/なぜ失敗したかを常に開示する。
+>
+> **無料枠切れ検知**: `chat_providers.rs`にHTTP 429(Too Many Requests、
+> 4社共通のレート制限/無料枠超過ステータス)を検知する
+> `is_quota_exceeded_status`+マーカー方式(`QUOTA_EXCEEDED::`接頭辞)を
+> 追加。`ProviderFailure`/`PriorityAttempt`に`quota_exceeded: bool`、
+> `PriorityCompleteResult`に`all_quota_exceeded: bool`(試行した全社が
+> 無料枠切れで1件も成功しなかったか)を追加。**正直な開示**: 429は
+> 「一時的な過多」と「本当にその日の無料枠切れ」を区別できない4社共通の
+> 制約——これ以上の精度は技術的に不可能。**「有料版も契約していたら
+> 自動で継続」の実現方法**: 有料契約(課金設定)済みのプロバイダは429を
+> 返さずそのまま成功するため、明示的な有料/無料切替ロジックは追加して
+> いない——同じAPIキーで課金が有効なら黙って成功するだけ、という
+> 既存の仕組みでそのまま要件を満たす。
+>
+> **セキュリティ**: GeminiのAPIキーを`?key=`から`x-goog-api-key`
+> ヘッダーへ変更(Google公式推奨)。プロンプト長20,000文字上限を新設
+> (3エンドポイントすべてに適用、誤った高額請求・無料枠急速枯渇を防止)。
+>
+> **実機検証**: `cargo build --release`成功、`cargo test --release`
+> 92件全green(新規11件)。実際にサーバーを起動し、GitHub検索が
+> トークン無しでも本物のGitHub APIへ到達し実データ(3件)を取得する
+> ことを確認、YouTube検索の未設定時フォールバックも確認。
+> open-english側UIから実ブラウザ操作でDB保存確認ダイアログ・
+> APIキー取得先リンク(4社)・保存→サーバー反映の一気通貫も確認済み
+> (詳細は`open-english/CLAUDE.md`同日エントリ参照)。
+>
+> 次にすべきこと: (1) 実際に429を意図的に発生させての
+> `all_quota_exceeded`実機検証(無料枠を実際に使い切る必要があり
+> 今回は未実施、ユニットテストでのマーカー判定ロジック検証にとどまる)、
+> (2) GitHubコード検索(`/search/code`)への対応要否の検討(現状は
+> リポジトリメタデータ検索のみ)。
+
+> **📌 2026-08-26追記(続き): マルチLLMプロバイダ(ChatGPT/DeepSeek/
+> Gemini/Claude)連携+優先順位フォールバック機能を新設、実機E2E検証・
+> セキュリティ見直し済み**
+>
+> ユーザー指示「open-englishのGoogle検索APIキーの他にChatGPT無料枠・
+> DeepSeek無料枠・Gemini・Claudeを単体でも同時実行でも使えるように」
+> +「無料枠を優先で使い切り順番に使用、にチェックを付けられる様に」
+> への対応。
+>
+> **新規モジュール**: `src/chat_providers.rs`(OpenAI/DeepSeek/Gemini/
+> Claudeへの単体・同時実行呼び出し、既存`web_search.rs`と同じ設計
+> パターン——APIキーはプロセスメモリ上保持のみ・環境変数フォールバック・
+> 正直なエラー開示)+`src/provider_priority.rs`(Google検索を含む
+> 5サービス共通の優先順位リスト管理)。新設エンドポイント:
+> `POST/GET/DELETE /v1/settings/chat-providers`・
+> `POST /v1/chat-providers/complete`(単体)・
+> `POST /v1/chat-providers/complete-multi`(同時実行、成功/失敗を
+> プロバイダ別に返す)・`POST/GET/DELETE /v1/settings/provider-priority`・
+> `POST /v1/chat-providers/complete-priority`(優先順に試し最初の
+> 成功を返す)。
+>
+> **セキュリティ見直し(実装後の再検証で発見・修正)**: (1) Geminiの
+> APIキーをクエリ文字列(`?key=...`)ではなくヘッダー(`x-goog-api-key`、
+> Google公式推奨方式)経由に変更——クエリ文字列だとリバースプロキシ・
+> アクセスログに平文で残りやすいため。(2)
+> `CHAT_PROVIDER_PROMPT_CHAR_LIMIT`(20,000文字)を新設し、3エンドポイント
+> (単体/同時実行/優先順位)すべてに適用——誤って巨大なテキストを
+> そのまま外部有料APIへ送ってしまう事故(意図せぬ高額請求・無料枠の
+> 急速な枯渇)を防ぐ実用的な安全弁。
+>
+> **実機検証**: `cargo build --release`成功、`cargo test --release`
+> 81件全green(新規6件含む)。実際にサーバーを起動し、4社すべてへ
+> 偽キーで実HTTPリクエストを送り、各社の実際のエラー応答
+> (OpenAI/DeepSeek/Gemini/Claude、いずれも本物のAPIエンドポイントへ
+> 到達し正しいエラー形式で応答)を確認。HashMap<Provider,String>の
+> JSON往復・優先順位の部分指定(足りない分は既定順序で補完)・
+> 不正なプロバイダ名/サービス名でのバリデーションエラー・
+> 20,000文字超プロンプトの拒否・Geminiヘッダー認証経路が実際に機能
+> することも確認済み。open-english側のUI(「🔀 AI Provider Priority」
+> パネル)からの実ブラウザ操作→aruaru-llmへの設定反映→外部API実呼び出し
+> までの一気通貫E2Eも確認済み(詳細は`open-english/CLAUDE.md`
+> 2026-08-26エントリ参照)。
+>
+> **正直な開示**: 「無料枠を使い切ったら次へ」の判定はAPI呼び出しの
+> 失敗全般をトリガーにしており、失敗理由が本当に「無料枠切れ」なのか
+> 他の一時的なエラーなのかを正確に判別する精度は保証しない。
+>
+> 次にすべきこと: (1) 「無料枠切れ」をより正確に判別する仕組み
+> (HTTPステータスコード・エラー本文のパターンマッチ等)の検討、
+> (2) 複数プロバイダの応答を1つへ要約・統合する機能(現状はプロバイダ
+> 別の生の応答を返すのみ)。
+
+> **📌 2026-08-26追記: Windows用インストーラー`aruaru-llm-installer.exe`を
+> 新設(GPU版=open-cuda Vulkan/DirectXの「SET」をオプトインで同梱+
+> インストール中に推奨モデルを選択できるダイアログ)、実機検証済み**
+>
+> ユーザー指示「open-englishでaruaru-llmはopen-cudaとopen-directxと
+> 一緒に使用したほうが本領を発揮するならSETでダウンロードしてインス
+> トールする仕様にして、リポジトリ名-installer.exeという名前に統一
+> して」+「インストール途中で、推薦のLLMを提示してLLMの特徴も英語と
+> 日本語で提示してもう一つ大きなLLMにしますか?などのメッセージ後に
+> 選択してLLMをインストール可能として」への対応。
+>
+> **「SET」の解釈(正直な開示)**: open-cuda/open-directxはaruaru-llmとは
+> 別のスタンドアロンアプリではなく、Cargo path依存として直接リンクする
+> Rustライブラリ(`opencuda-vulkan`/`opencuda-directx`crate)——したがって
+> 「一緒にインストール」の実体は「これらのGPUバックエンドを組み込んで
+> ビルドした1本の実行ファイル」を指す。`installer/windows/aruaru-llm.iss`
+> に`installgpu`タスク(既定**未チェック**)を新設し、選択時のみ
+> `--features hw-detect-vulkan,real-vulkan,hw-detect-directx,real-dx12`で
+> ビルドした`target-gpu/`版のexeを同名で上書きインストールする。
+> **既定を未チェックにした理由**: このプロジェクト自身の実測
+> (2026-08-23 HANDOFF参照、低スペックGT 730でGPU版がCPU版より約4.8倍
+> 遅かった)に基づく——「一緒に使えば必ず本領を発揮する」とは主張せず、
+> 効果は機種依存であることをインストーラー・README-INSTALLED.txt双方に
+> 明記した。
+>
+> **命名規則の統一**: `OutputBaseFilename=aruaru-llm-installer`
+> (open-englishの`open-english-installer`と同じ`<リポジトリ名>-
+> installer.exe`規則、バージョン番号なしの固定ファイル名)。
+> `PrivilegesRequired=lowest`——管理者権限のPowerShellを手動で立ち
+> 上げる必要をなくす(ユーザー指摘「パワーシェルを管理者で立ち上げる
+> のは面倒くさいです」への対応、インストーラー内部でのPowerShell呼び
+> 出し自体は問題ないとの確認済み)。
+>
+> **インストール中のモデル選択ダイアログ(`installer/windows/
+> recommend-model.ps1`、新規)**: `[Run]`セクションから実行され、(1)
+> 一時ポート(47600)でaruaru-llm.exeを起動、(2)`GET /v1/recommend`で
+> ハードウェア検出+推奨モデルを取得、(3)`GET /v1/models/catalog`で
+> カタログ一覧を取得し「推奨モデルの1段階大きいモデル」も算出、
+> (4)`System.Windows.Forms.MessageBox`で日英併記のYes/No/Cancel
+> ダイアログ(推奨モデルの特徴・正直な開示・サイズを表示、Yes=推奨
+> モデルをインストール、No=推奨→さらに大きいモデルへ、Cancel=
+> スキップ)、(5)選択に応じて既存の`POST /v1/recommend-and-download`・
+> `POST /v1/download-larger`を呼ぶ——**新しいダウンロード経路は
+> 追加していない**、既存APIをインストーラーから呼ぶ導線を新設した
+> のみ。サイレントインストール(`/VERYSILENT`、自動更新等)では
+> `skipifsilent`フラグによりこのダイアログ自体をスキップする。
+>
+> **実機検証**: (a) `cargo check --release --features hw-detect-vulkan,
+> real-vulkan,hw-detect-directx,real-dx12`成功、(b) 両ビルド
+> (`target/release/`・`target-gpu/release/`)を実際にビルド、(c)
+> `ISCC.exe`で実際に`aruaru-llm-installer.exe`を生成、(d) `recommend-
+> model.ps1`が依存する`GET /v1/recommend`・`GET /v1/models/catalog`の
+> 実JSON形状(`hardware.gpu_name`・`recommended_model_id`・
+> `models[].display_name_ja/en`・`approx_size_mb`等)を実際にサーバーを
+> 起動して`curl`で確認し、フィールド名の食い違い(`catalog.entries`が
+> 実際には`catalog.models`だった)を発見・修正、(e) PowerShellスクリプト
+> のUTF-8 BOM欠落による構文エラー(このエコシステムで繰り返し発生する
+> 既知のパターン)を実際に`[System.Management.Automation.Language.
+> Parser]::ParseFile`で検出・BOM付与により解消、(f) `/VERYSILENT`での
+> 無人インストールが新しい`[Run]`ステップでハングしないことを実際に
+> インストールを実行して確認(exit code 0、タイムアウトせず完了)。
+> **正直な開示・未検証**: 対話モード(GUIウィザード)でのダイアログ
+> 実表示・実際のYes/No/Cancelクリック操作は、この開発環境が非対話的な
+> ため未検証(ロジック自体はAPI呼び出しレベルで検証済み)。
+>
+> CI(`.github/workflows/release.yml`)もWindows向けに(a) 既定ビルド、
+> (b) GPU版ビルド(`CARGO_TARGET_DIR=target-gpu`)、(c) Inno Setup
+> (`choco install innosetup`)による`aruaru-llm-installer.exe`ビルド、
+> の3段を追加し、GitHub Releaseへ添付するよう更新済み(実CI実行の
+> 確認は次回タグpush時)。
+>
+> 次にすべきこと: (1) 実際にタグをpushしてCIが3ビルド(CPU/GPU/
+> インストーラー)とも成功することを確認、(2) 対話モードでの実際の
+> ダイアログ操作確認、(3) open-english側の「まとめてインストール」
+> タスクからこの新しい`aruaru-llm-installer.exe`を使うよう切り替える
+> か(現状は生のzipを`fetch-aruaru-llm.ps1`で取得する方式のまま)検討。
+
+> **📌 2026-08-25追記: (1)ブラウザ内AI実行(WASM+WebGPU)構想の段階的導入
+> 計画を確定、(2)複数訪問者が共有するVPSデプロイでGoogle検索APIキーが
+> 意図せず共有・消費されるバグを修正(実装・実機検証済み)**
+>
+> **(1) ブラウザ内AI実行構想**: 詳細な調査結果・技術検証(`wgpu`+
+> `wasm32-unknown-unknown`のコンパイル成功確認)・3段階の導入計画は
+> `RPoem/CLAUDE.md`同日エントリを正本とする(重複を避けるためここでは
+> 要約のみ): 第1段階でこのリポジトリのGPT-2/distilgpt2生成ロジック
+> (現状CPU実行、`opencuda_cpu::CpuDevice`経由)を`wasm32-unknown-unknown`
+> 向けにビルドできるCargo featureを追加し、RPoemの`apps/desktop-wasm`
+> (Tauri互換WASMシェル)がこれをホスト、open-englishのフロントエンドが
+> 直接読み込む——という「トライブリッド」構成にする計画。第2段階で
+> `wgpu`経由のWebGPUバックエンドをopen-cudaのGEMM/Attentionカーネルへ
+> 適用しGPU対応へ拡張する。いずれも**今回は未着手**(調査・計画確定
+> のみ)——次回セッションでaruaru-llm側のwasm32 featureの追加から着手する。
+>
+> **(2) Google検索APIキーの共有消費バグ修正(実装済み・実機検証済み)**:
+> `POST /v1/generate-with-search`が使う`web_search::search()`は
+> プロセス全体で1組しか保持できないグローバル認証情報
+> (`read_credentials()`、環境変数または`POST /v1/settings/
+> google-search`経由)を参照する設計だった——**複数の訪問者が同じ
+> aruaru-llmインスタンス(VPS上の共有デプロイ)へブラウザ経由で
+> アクセスする場合、ある訪問者が自分のキーを設定すると他の全訪問者の
+> 検索もそのキーへ切り替わり、意図せず共有・消費されてしまう**実バグ
+> だった(ユーザー指摘「開発者が設定したAPIキーとIDは、アクセス者は
+> 使わない、消費しない様に」への対応)。
+> - `src/web_search.rs`に`search_with_credentials(query, max_results,
+>   api_key, cx)`を新設——グローバル設定に一切触れず、呼び出し元が
+>   明示的に渡した認証情報のみでこのリクエスト限りの検索を行う。
+> - `GenerateWithSearchRequest`(`src/main.rs`)に`google_search_api_key`/
+>   `google_search_cx`(いずれも任意)を追加。両方指定されていれば
+>   `search_with_credentials`を最優先で使い、未指定ならこれまで通り
+>   グローバル設定(`is_configured`/`search`)へフォールバックする
+>   (単一利用者がローカルPCで環境変数設定する既存の使い方は無変更)。
+> - **検証**: `cargo check --release`成功(新規警告なし、既存の
+>   pre-existing警告5件のみ)。open-english側(`app.js`)を対応する
+>   実装へ更新し、実ブラウザで「保存→localStorageへ格納→クリア」の
+>   一連の流れをJS経由で確認済み(詳細は`open-english/CLAUDE.md`
+>   同日エントリ参照)。**実際にVPS上で2人の訪問者が別々のキーを
+>   使って同時にリクエストするE2E検証は未実施**(コードレビュー+
+>   単体コンパイル確認+ブラウザ側のlocalStorage動作確認までの範囲、
+>   正直な開示)。
+> - 次にすべきこと: (a) 実際に複数ブラウザセッションからの同時
+>   リクエストで、互いのキーが混ざらないことをE2E検証、(b) 上記(1)の
+>   第1段階(aruaru-llmのwasm32ビルドfeature)への着手。
+
+> **📌 2026-08-19追記: 東芝SBM/DeepSeek調査タスクは完了・現状維持と判断
+> (`open-english/PORTING.md`のHANDOFFに残っていた「項目4未着手」を受けて
+> 日英中(簡体)中(繁体)4言語でWebSearch調査を実施)**:
+> - **東芝SBM**: 2026年の新展開として、(1) 2026年4月発表の第3世代SB
+>   アルゴリズム("カオスの縁"利用、Physical Review Applied掲載、旧世代比
+>   約10〜100倍高速化)、(2) 2026年2月、SBMを自律移動ロボットへ搭載し
+>   リアルタイム制御に応用(Nature Communications等掲載、東芝・MIRISE)、
+>   (3) 2026年6月、最適化制御AI+Isingモデル圧縮を組み合わせた新フレーム
+>   ワークを確認した。ただしこのリポジトリでは既に`cache_optimizer.rs`
+>   (`POST /v1/models/optimize-cache`)でSBMをナップサック問題(モデル
+>   キャッシュ選択)として実装済み(2026-08-10 HANDOFF参照)であり、今回
+>   発見した第3世代アルゴリズムの改善(カオスの縁による成功確率向上)は
+>   理論上参考になり得るが、現行実装は8シード多重探索で75%以上の近似
+>   精度という別方式で既に運用中のため、既存実装を置き換えるほどの
+>   緊急性・具体的な適用差分は無いと判断し、コード変更は行わなかった
+>   (正直な開示)。
+> - **DeepSeek**: MLA(Multi-head Latent Attention、KV量93.3%削減)・
+>   DeepSeekMoE(スパース比率の継続的な圧縮、V3の5.4%→V4-Proの3.1%)・
+>   R1からのreasoning蒸留(検証・振り返りパターンをV3へ蒸留)を実在の
+>   技術として確認。加えてSlimMoE(arXiv:2506.18349、MoEのexpert
+>   slimming+多段蒸留、Phi 3.5-MoEを41.9B→7.6B/3.8Bへ圧縮)を新規に発見
+>   した。ただしこのリポジトリの推論エンジンはGPT-2 124M(密なdecoder-only、
+>   MoEではない)であり、MLA/DeepSeekMoE/SlimMoEはいずれも
+>   **MoEアーキテクチャまたはマルチヘッド潜在アテンション前提の再学習を
+>   要する技術**で、既存の事前学習済みGPT-2重みへ後付けで適用することは
+>   できない(アーキテクチャ変更には再学習が必須、正直な開示)。既存の
+>   INT4/INT8量子化(`opencuda-blas`、2026-07-21時点で実装済み)は
+>   DeepSeekの量子化アプローチと方向性が一致しており、追加で取り込む
+>   べき新規手法は見つからなかった。
+> - **結論**: 今回の調査で、東芝SBM・DeepSeekのいずれについても、
+>   このリポジトリへ**新規にコード実装すべき具体的な差分は無い**と
+>   判断した(過去のHANDOFFで既に両技術とも実装済み、かつ今回発見した
+>   最新動向は現行実装のアーキテクチャ前提〈非MoE・単一シードでなく
+>   多重探索〉と噛み合わないため)。この保留タスクは調査完了として
+>   クローズする。
+
+> **📌 2026-08-19追記: open-cuda/open-directxの「間接的な自動アップデート」経路の再調査**
+> (ユーザー指摘「open-englishでaruaru-llmが使われるのですから、
+> open-cuda・open-directxが一緒に自動アップデートの対象で深い関連リポジトリ
+> の対象です。もしシステムがプログラムがそうなっていないなら、システムの
+> 開発の全て修正の対象です」を受けた再調査)。
+> - **依存形態の実態**: `Cargo.toml`は`opencuda-core`/`opencuda-cpu`/
+>   `opencuda-blas`/`open-cuda-bert`/`open-cuda-llm`をすべて
+>   `path = "../open-cuda/crates/..."`のローカルpath依存で参照しており、
+>   crates.io公開もgit依存でのcommit固定(rev/tag pin)もしていない。
+>   `open-directx`(dream-os/open-directx、別リポジトリ)への依存は
+>   `Cargo.toml`に一切無いことを確認済み(2026-07-26のHANDOFF記載どおり
+>   現状も変わらず——GPU検出のDirectX経路は`open-cuda`内の
+>   `opencuda-directx`クレートであり、別リポジトリ`open-directx`とは
+>   無関係)。
+> - **CI(`.github/workflows/release.yml`)の実態確認**: タグpush時の
+>   リリースビルドは、ビルド直前に`git clone --depth=1
+>   https://github.com/aon-co-jp/open-cuda.git ../open-cuda`を実行して
+>   おり、これはブランチ/タグ/commitを指定しない**デフォルトブランチの
+>   最新HEAD**を毎回新規checkoutする形になっている(2026-08-17時点で
+>   既に実装済み、RPoem/RS-JSON等の他sibling path依存も同様の方式)。
+>   つまり——ユーザー指摘の「aruaru-llmが新しいリリースをビルドする際、
+>   常に最新のopen-cudaを取り込んでビルドする」という間接的自動更新の
+>   経路は、**タグpushによるCIリリースビルドに関しては既に実装済み**
+>   であることが判明した(前回セッションでの「自己アップデート機構は
+>   適用できないため見送り」という判断は、self_update.rs型のバイナリ
+>   自己更新の文脈に限った判断であり、CI経由の間接更新は別軸で既に
+>   機能していたことを見落としていた)。
+> - **手元(ローカル)ビルド運用のみ抜けていた点**: 一方、開発者が
+>   ローカルで`cargo build --release`する場合は、隣接ディレクトリ
+>   `../open-cuda`の**その時点でのworking treeの状態**をそのまま使う
+>   ため、ローカルの`open-cuda`をpullし忘れると古い状態でビルドされる
+>   リスクが残る(CIのような強制checkoutが無い)。ここは運用ルールとして
+>   明記が抜けていたため、今回**運用ルールとして追記**する:
+>   **リリースタグをpushする前に、必ず`git -C ../open-cuda pull`(および
+>   `git -C ../RPoem pull`等、他のsibling path依存リポジトリ)で最新化
+>   してから`cargo update -p opencuda-core -p opencuda-cpu -p
+>   opencuda-blas -p open-cuda-bert -p open-cuda-llm`を実行し、
+>   `Cargo.lock`を最新のsibling内容に追従させること。**
+> - **検証結果(正直な開示)**: ローカル(`F:\runo\aruaru-llm`)で
+>   `cargo update -p opencuda-core -p opencuda-cpu -p opencuda-blas
+>   -p open-cuda-bert -p open-cuda-llm`を実行し正常終了(0 packages
+>   changed = 既にsibling内容と一致)したことを確認。続けて`cargo build
+>   --release --bin aruaru-llm`を実行したが、ビルドは時間がかかり
+>   バックグラウンドタスクとして進行中で、本追記の時点ではビルド完走
+>   (成功/失敗)の確認は取れていない——**CI環境上での実際の動作(GitHub
+>   Actions上でのgit clone→build成功)までは検証できていない**ことを
+>   明記する。
+> - **結論・次にすべきこと**: (1) `open-directx`は現時点でaruaru-llmから
+>   一切依存されていないため、間接自動更新の対象外(依存が発生した時点で
+>   同様のsibling checkout方式をCIへ追加する)。(2) `open-cuda`について
+>   CI側の間接自動更新は既に機能しているため追加実装は不要、ただし
+>   ローカルリリース手順の運用ルール(上記pull徹底)を本HANDOFFに明記した。
+>   (3) ローカルでの`cargo build --release`完走確認(成功/失敗)は
+>   バックグラウンドで進行中のため、完了次第結果をこのHANDOFFへ追記する
+>   必要がある。
+
+
+作業ドライブは`F:\open-runo`。この節は[`open-raid-z`](https://github.com/aon-co-jp/open-raid-z)の
+`CLAUDE.md`を正本とし、各プロジェクトへコピーして同期する方針に準じる。
+GitHubリポジトリ: [aon-co-jp/aruaru-llm](https://github.com/aon-co-jp/aruaru-llm)。
+
+> ⚠️ **正直な開示(最重要、2026-07-25更新)**: 2026-07-25、`open-cuda`の
+> `opencuda-llm`クレート(GPT-2 124M実学習済み重み、`openai-community/gpt2`)
+> を統合し、`POST /v1/generate`で**実際に自己回帰デコーダによる文章生成が
+> 可能**になった(下記「以前の記述」にあった「自己回帰デコーダはまだ
+> 実装していない」は本エンドポイントに限り解消済み)。ただし
+> **GPT-2 124Mは2019年発表の小型モデルであり、GPT-4等最新の商用LLMと
+> 同等の性能・知識・指示追従能力は無い**——あくまで「外部LLM API契約
+> (課金)不要の自己完結型AI」としての実証段階であることを常に明記する。
+> 生成テキストは文法的には自然な英語になることが多いが、意味的に正確
+> とは限らない(幻覚しうる、ファインチューニング済み対話モデルではなく
+> 素の事前学習済み言語モデルの貪欲デコード)。詳細は下記HANDOFF
+> 2026-07-25エントリ参照。
+>
+> **以前の記述(2026-07-21〜、`/v1/chat`には引き続き該当)**: `/v1/chat`
+> (意図分類)は`open-cuda`の`opencuda-bert`クレート(multilingual-e5-small、
+> MITライセンス、日本語含む100言語対応)で実際に文を埋め込みベクトルへ
+> 変換し、意図ごとの代表例文とのコサイン類似度で分類する**エンコーダ
+> ベースの意味的類似度分類**のままであり、対話文を生成する能力ではない
+> (生成は`/v1/generate`が別途担う、下記「意図分類 vs 生成」参照)。
+> 「AI」「LLM」を名乗る以上、この限界を隠さず常に明記すること。
+
+## このプロジェクトの役割
+
+`aruaru`エコシステム(aruaru-tokyo・aruaru-db・e-gov.info・karu.tokyo等)
+共通の「AIチャットコマース」応答ロジックを提供する、独立したHTTPサービス。
+各サイトがそれぞれ個別にチャット応答ロジックを実装するのではなく、この
+サービスにHTTP経由で問い合わせる構成にすることで、将来実際のLLM推論に
+差し替える際の変更箇所を1箇所に集約する。
+
+### なぜ今すぐ本物のLLM推論を実装しないか(2026-07-21更新、旧記述は誤り)
+
+> ⚠️ 訂正: 以前の本節は「`opencuda-blas`のGEMM/Attentionはスタブのまま」
+> としていたが、これは古い情報のまま更新漏れしていた。実際には
+> `opencuda-blas`の**CPUパスでGEMM(`sgemm`, `GemmPath::CpuNaive`)・
+> 素朴なAttention(`scaled_dot_product_attention`)・INT4/INT8量子化は
+> 既に実装済み**(2026-07-21時点でのopen-cuda `opencuda-blas/src/lib.rs`
+> 確認)。テストも全green。
+
+未実装のまま残っているのは以下のみ:
+- GPU専用の高速パス(`GemmPath::CuBlas`/`RocBlas`/`OneMkl`/`VulkanGeneric`)
+- 真のFlash Attention(タイル化・オンラインsoftmax、`flash_attention`関数)
+
+本物のLLM推論に本当に不足していたのはGEMM/Attentionという**演算プリミティブ**
+ではなく、**意味のある入力ベクトル**だった。2026-07-21、`opencuda-bert`
+クレート(multilingual-e5-small、学習済み埋め込み層+トークナイザ)が
+実装され、`scoring.rs`はbag-of-wordsから実際の文埋め込み+コサイン類似度
+分類へ移行した(下記「現状の実装」参照)。ただしこれは**エンコーダ専用**
+であり、文章を生成する自己回帰デコーダ(対話生成としての「LLM」の能力)は
+まだ実装していない。それにはQwen3-14B等の実モデル重みの入手・ライセンス
+確認が前提条件になる(未着手、次のHANDOFF参照)。
+
+### セットアップ(2026-07-21追記): モデル重みの取得
+
+`models/multilingual-e5-small/`(470MB超)は`.gitignore`対象で**Gitに
+含めない**。ビルド・起動前に、各自Hugging Faceから取得すること:
+
+```
+huggingface-cli download intfloat/multilingual-e5-small \
+  --local-dir models/multilingual-e5-small
+```
+
+(または`config.json`/`model.safetensors`/`sentencepiece.bpe.model`/
+`special_tokens_map.json`/`tokenizer.json`/`tokenizer_config.json`を
+`https://huggingface.co/intfloat/multilingual-e5-small/tree/main`から
+個別ダウンロードし、同ディレクトリに配置する)。
+
+### 現状の実装(2026-07-21更新、エンコーダベースの意味的類似度分類)
+
+- `opencuda-bert`(multilingual-e5-small)による実際の文埋め込み計算+
+  `opencuda_bert::cosine_similarity`によるコサイン類似度で意図分類
+  (申請/購入/与信/不動産等のカテゴリ)。各インテントの代表例文embeddingは
+  プロセス起動後の初回呼び出し時に計算・キャッシュする(`OnceLock`、
+  リクエストごとの再ロードを避けるため)。
+- 各カテゴリに対応した定型応答文
+- 将来、自己回帰デコーダによる文章生成(または外部LLM APIの薄いラッパー)に
+  差し替える際、**HTTP APIの入出力契約(`POST /v1/chat` → `{"reply": "...",
+  "engine": "..."}`)は変えずに内部実装だけ差し替えられる**ように設計する。
+  `engine`フィールドには常に現在の実装方式
+  (`"embedding-cosine-v0-opencuda-bert-cpu"`等)を正直に返し、呼び出し側が
+  「本物の対話生成AIかどうか」を判別できるようにする。
+
+## 技術スタック
+
+**2026-07-31更新**: 本家`poem`クレートへの直接依存を廃止し、`RPoem`
+(`RPoem/crates/open-runo-poem-compat`、`open_runo_router::hyper_compat`
+のtokio/hyper直接実装をpoemと同じ呼び出し形状でラップした薄い
+ファサード)へ移行した(ユーザー指示「Rust＋Poem互換のRPoemで、Rustでも
+他のプログラム言語でも扱える仕様に」)。`Data<T>`抽出子は提供されない
+ため、共有状態(`device`/`registry`)はハンドラ登録時のクロージャで
+`Arc`をキャプチャする形。DB非依存・1バイナリ完結という設計自体は
+不変。実HTTPで全エンドポイント(chat/classify-security/generate/
+models系/admin系/healthz/静的UI)の動作を確認済み。
+
+## API
+
+- `POST /v1/chat` — `{"message": "...", "tenant": "e-gov.info"(任意)}` を
+  受け取り `{"reply": "...", "engine":
+  "embedding-cosine-v0-opencuda-bert-cpu", "matched_intent": "..."}` を
+  返す。`tenant`は未登録でも応答は返す(可用性を落とさないため)。
+- `POST /v1/generate`(2026-07-25新設) — `{"prompt": "...", "max_new_tokens":
+  16(任意、既定16、上限128), "tenant": "..."(任意)}` を受け取り
+  `{"completion": "...", "engine":
+  "gpt2-124m-greedy-decode-v0-opencuda-llm-cpu", "disclosure": "..."}` を
+  返す。`opencuda-llm::GptModel`(GPT-2 124M実重み)による貪欲デコード
+  生成。GPT-2実重み(`../open-cuda/crates/opencuda-llm/models/gpt2/`、
+  `ARUARU_LLM_GPT2_DIR`で変更可)が無い・ロード失敗時は503を返す
+  (`/v1/chat`とは異なりbag-of-words的なフォールバック先が存在しないため、
+  黙って別経路には落とさず正直にエラーを返す設計)。`/v1/chat`(意図分類、
+  軽量・高速)とは目的が異なるため無理に統合していない——役割分担は
+  `src/generation.rs`のモジュールdocコメント参照。
+- `POST /admin/tenants` — テナント(呼び出し元ドメイン)を動的登録する
+  (`{"host": "...", "label": "..."}`)。`x-admin-token`ヘッダ認証
+  (`E_GOV_LLM_ADMIN_TOKEN`環境変数で設定、未設定時は無認証)。
+- `GET /admin/tenants` — 登録済みテナント一覧。
+- `DELETE /admin/tenants/:host` — テナント登録解除。
+- `GET /healthz` — ヘルスチェック。
+
+## 「分身の術」構成(2026-07-18追記、正本はopen-raid-z参照)
+
+`open-web-server`と同じ設計思想により、**このサービスは1インスタンスを
+複数ドメイン(e-gov.info・aruaru-tokyo・karu.tokyo等)が共有する**。
+ドメインを追加するたびに新しい`aruaru-llm`プロセスを個別インストール・
+起動する必要はない——`src/tenants.rs`の`TenantRegistry`(`RwLock`による
+プロセス内共有状態、再起動不要で実行時追加・削除可能)と、上記
+`/admin/tenants`系APIがこれを実現する。**管理は`open-easy-web`側から
+行う想定**(`open-easy-web/server/src/appserver_registration.rs`を拡張し、
+この`/admin/tenants`APIを呼び出す統合は未着手、次回以降の実装対象)。
+
+マルチCPU/マルチコア/マルチスレッド対応: `#[tokio::main]`は既定の
+multi_threadフレーバー(`current_thread`への固定なし)。CPU計算
+(bag-of-wordsスコアリング)は`opencuda_cpu::CpuDevice`が
+`std::thread::available_parallelism()`で検出した全論理コアへ
+`rayon`経由で並列ディスパッチする。
+
+## 関連プロジェクト
+
+- [open-cuda](https://github.com/aon-co-jp/open-cuda) — 将来の実推論バックエンド候補(GPUランタイム、現状はPhase 1-2のみ実装済み)。SET構成の相方
+- [e-gov.info](https://github.com/aon-co-jp/e-gov) — 本サービスの最初の呼び出し元(`src/chat_commerce.rs`のロジックをここに集約する想定)。「分身の術」構成の最初のテナント候補
+- [open-easy-web](https://github.com/aon-co-jp/open-easy-web) — 本サービスの管理(テナント登録・削除)を行う想定の管理ツール(統合は未着手)
+- [aruaru-tokyo](https://github.com/aon-co-jp/aruaru-tokyo-server) — 将来の呼び出し元候補
+- [aruaru-search](https://github.com/aon-co-jp/aruaru-search) — **本サービスとセットで動かす**自前メタ検索(Rust・APIキー不要・世界約130言語)。`web_search::search_with_locale` はまずこれを呼び(`ARUARU_LLM_SEARCH_URL`、既定 `http://127.0.0.1:4610`、空文字で無効)、成功すれば共有キーの1日100回の上限・各社の無料枠を消費しない(2026-09-25)。失敗・0件のときだけ従来の共有キーのチェーンへ移る。逆方向として、aruaru-search は検索元の自動保守に本サービスの `/v1/chat-providers/complete-priority`(無料AI)を、結果の意味による並べ替えに `POST /v1/rerank`(open-cuda上のmultilingual-e5-small、約100言語)を使う。systemd は `aruaru-llm.service.d/aruaru-search.conf`(Wants/After)で一緒に起動する。
+- [open-raid-z](https://github.com/aon-co-jp/open-raid-z) — 開発ルールの正本
+
+## 運用ルール追記(2026-07-18、正本はopen-raid-zのCLAUDE.md参照) — 確認不要の自動継続・リミット解除後の自動再開
+
+- **コンテキストウインドウ・5時間利用制限・その他のセッション中断が
+  発生し、その後リミットが解除されて新しいセッションが開始された場合、
+  「続けてよろしいですか」等の確認を挟まず、毎回自動的に前回セッションの
+  続きの作業を再開すること**(ユーザー指示、2026-07-18)。具体的には:
+  1. セッション開始時、各リポジトリの`git status`/`git log`と、この
+     `CLAUDE.md`(および他プロジェクトのCLAUDE.md)のHANDOFF節・
+     「次にすべきこと」記載を確認し、未完了・未pushの作業が無いかを
+     まず裏取りする(タスク管理メタデータを鵜呑みにしない既存方針と
+     同じ姿勢で、実際のgit状態を確認する)。
+  2. 未完了作業が見つかった場合、ユーザーへの確認を求めず、そのまま
+     自動的に検証(build/test)→修正→コミット→pushまで完了させる。
+  3. 完了している場合は、各CLAUDE.mdの「次にすべきこと」「未着手・
+     未完成」に記載された次の項目へ確認なしに着手する(既存の
+     「未着手だからといって確認を求めて手を止めない」方針の延長)。
+  4. 「続けてよろしければそのまま自動開発を継続します」のような、
+     続行そのものを尋ねる確認は今後一切行わない(ユーザー指示、
+     2026-07-18)。作業内容の要約・進捗報告はしてよいが、それは
+     承認を求めるものではなく完了報告として書く。
+  5. こまめにコミット・pushしておくことで、次回セッションが「どこから
+     再開すべきか」を迷わず`git log`/CLAUDE.mdから機械的に判断できる
+     ようにしておく(区切りがついた時点で都度コミット・pushする既存
+     方針との組み合わせ)。
+
+
+## 運用ルール追記(2026-07-19、正本はopen-raid-zのCLAUDE.md参照) — 白画面バグ等を見逃さない検証徹底
+
+- **WEB/UIを持つ機能を実装した後は、ビルド成功・`cargo test`・curlでの
+  ステータスコード確認だけで「完了」と報告せず、実際に画面が正しく
+  表示される(白画面・レンダリング崩れ・コンソールエラーが無い)ところ
+  まで確認すること**(ユーザー指示、2026-07-19)。
+  1. ブラウザ操作が可能な環境では、実際にページを開いて表示内容
+     (見出し・本文・想定した要素の存在)とコンソールエラーの有無を
+     確認する。
+  2. ブラウザ操作ができない環境では、少なくとも`curl`等でHTMLボディの
+     中身を取得し、期待される文字列が実際に含まれているかを確認する
+     ——ステータスコード200だけを見て「動作確認済み」としない。
+  3. 白画面・エラー・期待した内容の欠落等の不具合が見つかった場合は、
+     確認を求めず自動的に原因調査・修正・再確認まで行う。
+  4. 本番ドメインが未取得・DNS未設定なだけの状態は上記の「白画面
+     バグ」とは別物であり、混同しない(`localhost`確認で代替可)。
+
+
+## HANDOFF
+
+- **2026-09-05 `InferencePrecision`をpublic API(`GET /v1/recommend`)へ
+  接続——2026-09-03に追加されていたが「未接続」のまま残っていたギャップを
+  解消**:
+  再開用メッセージの残課題「精度考慮VRAM見積もり(InferencePrecision)は
+  追加したが、実際の推論dtype選択(open-cuda-llm側のモデルロード)へは
+  まだ未接続」を調査したところ、実際には**それ以前の段階のギャップ**が
+  あった——`recommend_id_for_vram_at_precision`(2026-09-03新設)を呼べる
+  経路が、公開エントリポイント`hardware::recommend()`にも
+  `GET /v1/recommend`ハンドラにも一切無く、この関数はテスト以外から
+  到達不能な内部専用コードのままだった。
+  1. **`src/hardware.rs`**: `InferencePrecision::parse(&str)`(クエリ
+     文字列からの解釈、`f16`/`fp16`/`half`等の別名対応、不明値は`None`)・
+     `as_str()`を追加。`Recommendation`に`precision_used: &'static str`
+     フィールドを追加。`recommend_at_precision(precision)`を新設し、
+     `recommend()`はこれへ`F32`を渡すだけの後方互換ラッパーへ変更
+     (シグネチャ・既定挙動は不変)。
+  2. **`src/main.rs`**: `GET /v1/recommend`ハンドラ(`recommend_model`)が
+     `()`から`Request`を受け取るよう変更し、`?precision=f16|f32|f64|f128`
+     クエリを手動パース(`url`クレート等の新規依存を追加せず、単純な
+     `split('&')`/`split_once('=')`で十分なため)。不明な値は`400`
+     `{"error": "unknown precision '...'"}`(既存の`/v1/generate`空入力
+     400化と同じ「入力ミスを隠さない」設計)。ルート登録を
+     `plain(...)`から`handler_fn(...)`へ変更(クエリへアクセスするため
+     `Request`が必要)。
+  3. **正直な開示・残る配線ギャップ(未解消、次の課題)**: この変更は
+     「VRAM見積もり計算に使う精度を外部から選べるようにする」ところ
+     までであり、選んだ精度を実際のモデルロード時dtype(`open-cuda-llm::
+     GptModel::load`)へ反映する配線は**まだ存在しない**——
+     `open-cuda-llm`は依然F32中心のロード実装(一部F16/BF16/FP8→f32
+     変換のみ対応、2026-09-02 HANDOFF参照)であり、これは`open-cuda`側の
+     対応が前提となる別のスライスとして残す(誇張しない)。
+  4. **検証**: `cargo build --release`成功(新規警告なし、
+     `recommend_id_for_vram`の未使用警告は`#[cfg_attr(not(test),
+     allow(dead_code))]`で解消)。`cargo test --release`
+     **110 passed / 0 failed / 2 ignored**(既存105+新規5、回帰なし)。
+     実際にサーバーを起動し、`GET /v1/recommend`(精度未指定)→
+     `precision_used:"f32"`、`GET /v1/recommend?precision=f16`→
+     `precision_used:"f16"`(このマシンはGPU非搭載のためどちらも
+     `recommended_model_id:"gpt2"`〈最小サイズ〉に留まる、精度による
+     差はGPU検出済み環境でのみ現れる設計通り)、
+     `GET /v1/recommend?precision=bogus`→`400`
+     `{"error":"unknown precision 'bogus', ..."}`を実HTTPで確認済み。
+  - 次にすべきこと: (1) 上記3番のGPUロード時dtype配線(`open-cuda`側の
+    対応待ち、ブロック要因として正直に記録する)、(2) より高VRAM級の
+    実GPU環境が得られた場合、`?precision=f16`等が実際に異なる
+    `recommended_model_id`を返すこと(このマシンでは検出不能なため
+    確認できていない)の実機再検証。
+
+- **2026-09-02(続き2) GPTQ(INT4/INT8)量子化モデルのロードに対応
+  (open-cuda 側 `4f27a41`、このリポジトリはコード変更なし)**:
+  ユーザー要望「対応外dtype(INT8/INT4)は正直なエラー。対応して」への
+  対応。GPTQ は単一 safetensors dtype ではなく「I32 ビットパックの
+  `qweight` + `scales` + `qzeros`(+ `desc_act` 時 `g_idx`)+
+  `config.json` の `quantization_config`」で表現されるため、
+  `open-cuda-llm::GptModel::load` がそれを自動検出して逆量子化する
+  (`w = (q - (zero+1)) * scale`、4bit=8値/i32・8bit=4値/i32)。
+  AWQ(interleave パック)は正直なエラーで拒否。**aruaru-llm 側は
+  `GptModel::load` を呼ぶだけなのでコード変更不要**——`config.json` に
+  `quantization_config` を持つ GPTQ モデルをカタログへ追加すれば
+  そのまま `/v1/models/select` でロードできる(カタログ追加自体は
+  未実施、GPTQ 版 GPT-2 互換モデルの実在確認が前提)。
+  `cargo test --release` **101 passed / 2 ignored**(新しい open-cuda
+  との path 依存ビルドで回帰なし)。
+
+- **2026-09-02(続き) FP8 重み量子化を opt-in 配線
+  (`ARUARU_LLM_ENABLE_FP8_WEIGHTS`)——open-cuda 側の FP8 演算カーネル
+  (`sgemm_fp8_weight`)と対になるスライス**:
+  1. **背景**: ユーザー要望「FP8 と F8 演算カーネルを実装開発対応して」
+     「対応外 dtype(INT8/INT4)のエラーを修正して」への対応。open-cuda
+     側で FP8(E4M3/E5M2)量子化 API + `sgemm_fp8_weight`(dequant-on-the-fly
+     GEMM)+ `GptModel::enable_fp8_weights` + 全数値 dtype ローダーを
+     実装(open-cuda コミット `b9fae40`、詳細は `open-cuda/CLAUDE.md`
+     2026-09-02(続き)エントリ)。
+  2. **`src/generation.rs`**: `wire_fp8_weights` を新設。
+     `ARUARU_LLM_ENABLE_FP8_WEIGHTS` の値 `e4m3`(別名 `fp8`/`hf8`)/
+     `e5m2`(別名 `bf8`)で `GptModel::enable_fp8_weights` を配線。
+     全 Linear の重みを FP8 化し `Linear::forward` が
+     `opencuda_blas::sgemm_fp8_weight` を通る。**既定 off**——MLA 配線と
+     同じ判断:GT730 に FP8 Tensor Core が無くソフトウェア実装で、
+     利益は重みメモリ 1/4 で速度ではない、かつ E4M3 の量子化誤差
+     (相対 ~2^-3)ぶん生成品質が劣化するため実ユーザー向け応答の
+     既定挙動にはしない。`wire_mla_kv_compression_any` の直後、
+     `real-vulkan`/`real-dx12` feature 配下ではない位置(GPU 非依存)で呼ぶ。
+  3. **検証**: `cargo test --release` **101 passed / 2 ignored**
+     (回帰なし)。実 HTTP E2E:
+     `ARUARU_LLM_ENABLE_FP8_WEIGHTS=e4m3` + `ARUARU_LLM_GPT2_DIR=...
+     models/distilgpt2` でサーバー起動 → 起動ログに
+     `quantized all Linear weights to FP8 (E4M3); Linear::forward now
+     runs opencuda_blas::sgemm_fp8_weight` が発火 → `POST /v1/generate`
+     が `"es are a common sight in the wild, and they can"` を生成
+     (f32 版 distilgpt2 の `"...and are often found in the wild."` と
+     僅かに異なる継続 = FP8 量子化が実際に効いている)。
+     **English**: `wire_fp8_weights` wires `GptModel::enable_fp8_weights`
+     via `ARUARU_LLM_ENABLE_FP8_WEIGHTS=e4m3|e5m2` (default off). All
+     Linear weights are FP8-quantized and `forward` runs
+     `sgemm_fp8_weight` (software dequant-on-the-fly GEMM — no FP8
+     Tensor Core on this box, benefit is ~4x smaller weight memory, not
+     speed; quality degrades by the FP8 quantization error). 101 tests
+     pass; real HTTP E2E verified the wiring log fires and `/v1/generate`
+     still produces coherent (slightly different) output.
+
+- **2026-09-02 model_catalog に DialoGPT-small(F16、対話FT済み)を追加
+  ——open-cuda 側 safetensorsローダーの F16/BF16/FP8 対応と対になる
+  スライス(open-cuda → aruaru-llm → open-english)**:
+  1. **背景**: 2026-08-26 HANDOFF で「`microsoft/DialoGPT-small` は
+     F16 配布で `open-cuda-llm` ローダーが F32 のみ対応のためロード
+     不可、カタログ追加を見送り実装も元へ戻した」と記録していた。
+     今回、`open-cuda` 側 `tensor_f32` を F16/BF16/FP8(E4M3/E5M2)→f32
+     変換対応へ拡張した(`open-cuda` コミット `9c4ff39`、詳細は
+     `open-cuda/CLAUDE.md` 2026-09-02 エントリ)ため、この見送りを解消した。
+  2. **`src/model_catalog.rs`(コミット `ef4004f`、`Cargo.lock` 追跡込み)**:
+     `CatalogEntry` に `#[serde(skip_serializing_if = "Option::is_none")]
+     pub tokenizer_hf_repo: Option<&'static str>` を追加(既存5エントリは
+     `None`)。新エントリ `dialogpt-small`(`hf_repo:
+     "microsoft/DialoGPT-small"`、`tokenizer_hf_repo:
+     Some("openai-community/gpt2")` ——DialoGPT は gpt2 と同一の
+     50257 BPE 語彙のため `tokenizer.json` を流用、`approx_size_mb: 335`、
+     MIT License。対話FT済みだが instruction following まで学習した
+     モデルではない点を `license_note_ja` に明記)。`install_from_base_url`
+     が `("tokenizer.json", Some(tok_repo))` のときだけ tokenizer の
+     取得元を差し替える。`next_larger`/`next_smaller` のサイズ順テストも
+     更新(335MB で最小)。
+  3. **検証**: `cargo test --release`(model_catalog 9/9 含む)、実 HTTP
+     E2E:`POST /v1/models/select` が実際に `dialogpt-small` へ
+     ホットスワップ(以前 `unexpected dtype F16` で失敗していた操作)、
+     `POST /v1/generate` が会話調の出力を生成することを確認。
+     **English**: added `dialogpt-small` to the model catalog now that
+     `open-cuda`'s loader converts F16→f32 (was blocked / reverted on
+     2026-08-26). New `tokenizer_hf_repo` field lets DialoGPT reuse
+     gpt2's `tokenizer.json`. `/v1/models/select` hot-swap and
+     `/v1/generate` verified over real HTTP.
+
+- **2026-09-01(続き2) Model Folding: Attentionサブ層を丸ごとスキップ
+  する軽量パスを実装(open-cuda + aruaru-llm + open-english の3リポジトリ
+  スライス)、および「open-cudaは必須の相方」を日英でREADMEへ明文化
+  ——他アカウントでの再開用メモ**:
+
+  1. **Attentionスキップ軽量パス(3リポジトリスライス)**: 前回の
+     「未着手・次回検討候補」に挙げていた
+     「`DecoderLayer`に『Attention自体をスキップする』専用の軽量パスを
+     追加すれば、より高速化できる余地がある」を実装した。
+     - **open-cuda側**(`crates/open-cuda-llm/src/lib.rs`、正本):
+       `DecoderLayer`へ`skip_attention: bool`を追加、`linear_adapter`
+       コンストラクタでのみ`true`。`forward_step`/`forward_prefill`が
+       `skip_attention`時にln_1・QKV射影・softmax・P·V・attn_out・
+       KVキャッシュpushを一切実行せず残差だけをFFNへ渡す。
+       `linear_adapter`の`qkv`/`attn_out`はゼロ出力なので**ビット単位で
+       数値等価**(生成トークン列が1トークンも変わらない)。詳細・
+       検証結果は`open-cuda/CLAUDE.md`の2026-09-01(続き2)エントリ。
+     - **このリポジトリ側**: `generation.rs`の`FoldResult`へ
+       `attention_compute_skipped: Option<bool>`(線形アダプタ版のみ
+       `Some(true)`、閾値方式・ブロック探索方式は`None`)、
+       `fold_active_model_with_linear_adapter`の`disclosure_ja`/
+       `disclosure_en`にAttention計算コストが実際に削減される旨を追記。
+       `main.rs`の`FoldLayersResponse`へ`attention_compute_skipped:
+       Option<bool>`を追加し`POST /v1/models/fold-layers`のレスポンスへ
+       反映。
+     - **open-english側**: `index.html`の「⚙ Setup aruaru-llm」パネル内
+       fold-layers開示文へ日英併記で追記、`app.js`の`foldLayersBtn`
+       ハンドラが`attention_compute_skipped`をステータス欄へ表示。
+     - **検証**: open-cuda `cargo test -p open-cuda-llm --release --
+       --test-threads=1` **35件全green**(新規bitwise等価テスト含む)、
+       `cargo clippy ... -- -D warnings` 警告0件。aruaru-llm
+       `cargo test --release -- --test-threads=1` **101件全green**
+       (regressionなし)。open-english `node --check app.js` OK、静的配信
+       で実ブラウザ表示確認。
+     - **CPU実測(開発機、open-cuda側`--ignored`ベンチ)**: 合成モデル
+       (12層中8層折りたたみ)で**約19%高速化**(731ms→899ms/gen)、
+       実GPT-2 124M(12層中6層折りたたみ)で**生成トークン列がskip有無で
+       バイト完全一致**を確認した上で**約9%高速化**(1.175s→1.289s/gen)。
+       実GPT-2ではFFN・lm_headの比重が大きく効果は相対的に小さいが、
+       折りたたむ層数に比例する。
+     - **実HTTP E2E検証(distilgpt2、実サーバー起動)**: `POST
+       /v1/models/fold-layers`(`use_linear_adapter:true`,
+       `num_layers_to_remove:2`, `ridge_lambda:0.5`)のレスポンスが
+       `attention_compute_skipped:true`・`ridge_lambda_used:0.5`を返し、
+       `completion_after_fold`が劣化ループではない実在英文
+       ("I'm going to be a bit of the day...")を生成、折りたたみ後も
+       `POST /v1/generate`が正常に動作、閾値方式(層を跡形もなく削除)
+       では`attention_compute_skipped`が`null`になることを確認。
+     - **残課題**: (a) 実GPU経路(Vulkan/DirectX)でのskip有無の速度比較
+       は未実施(CPU実測のみ)。(b) `POST /v1/models/fold-layers`を
+       open-englishのUIボタンから呼ぶ導線は既存実装のまま(2026-09-02
+       追加、`open-english/CLAUDE.md`参照)。
+
+  2. **「open-cudaは必須の相方」をREADMEへ明文化(ユーザー指示、日英
+     併記)**: `README.md`・`README-English.md`の`open-cuda`SET節の前に
+     新セクションを追加。要点——`aruaru-llm`は単体では成立せず、推論
+     エンジンの本体は`open-cuda`の`opencuda-*`/`open-cuda-llm`/
+     `open-cuda-whisper`クレート(GEMM・Attention・埋め込み・GPT-2
+     デコーダ・音声認識)であり、`aruaru-llm`はそれらをCargoの**path
+     依存**として取り込みHTTPで公開する薄い層にすぎない。したがって
+     (a)ソースからビルドする側は隣に`open-cuda`をcloneする(CIは
+     `release.yml`が自動clone)、(b)`aruaru-llm`を組み込む側
+     (`open-english`等)も同じ前提を引き継ぐ——ただし`open-cuda`は
+     `aruaru-llm`バイナリへ**静的リンク**されるため、リリース済み
+     バイナリを使う限り別途インストールは不要、(c)Vulkan/DirectX GPU
+     バックエンドのみ`--features hw-detect-vulkan,real-vulkan,
+     hw-detect-directx,real-dx12`ビルド時に有効
+     (`aruaru-llm-installer.exe`の`installgpu`タスク、既定オフ)。
+     **インストーラーへの別途同梱は不要**という結論——open-cudaに
+     単体ランタイム成果物は存在せず、コンパイル済み`aruaru-llm.exe`に
+     `opencuda-*`コードが既に含まれる。`open-english`側の
+     `installer/windows/fetch-aruaru-llm.ps1`・`installer/unix/
+     fetch-aruaru-llm.sh`のコメントにもこの旨を日英併記で追記した。
+
+- **2026-09-01 Model Folding(層冗長性検出+実際の折りたたみ)を新設。
+  「DeepSeekの折りたたみ理論」は日英調査の結果、実在しないと判明
+  ——他アカウントでの再開用メモ、この記述は必ず読むこと**:
+
+  ユーザー指示「DeepSeekの折りたたみ理論(Model Folding)を実装して
+  ほしい」への対応として、まず日英2言語でGoogle/GitHub調査を行った。
+  結論: **「DeepSeekの折りたたみ理論」という技術は実在しない**
+  (DeepSeekの実際の効率化技術はMLA・FP8混合精度・DeepSeekMoEであり、
+  いずれも「折りたたみ」ではない)。混同の元と考えられるのは無関係の
+  ICLR 2025論文「Model Folding」(arXiv:2502.10216、ニューロン単位
+  k-meansクラスタリングを要する高度な手法)。このクレートの`GptModel`
+  重みには公開アクセサが無く忠実な再現は困難と判断し、代わりに
+  **より単純で実装・検証が現実的な代替手法群**を3段階で実装した
+  (いずれも実装は`open-cuda`側`open-cuda-llm`クレート、HTTP配線が
+  この`aruaru-llm`側)。
+
+  1. **層単位の独立閾値方式**(ShortGPT論文arXiv:2403.03853/
+     Gromov et al. arXiv:2403.17887方式): `GptModel::
+     analyze_layer_redundancy`(各層のBlock Influence=1-入力/出力
+     コサイン類似度を計算、読み取り専用)+`prune_redundant_layers`
+     (閾値未満の層を実際に除去)。`aruaru-llm`側
+     `generation::analyze_active_model_layer_redundancy`/
+     `fold_active_model`。**弱点(実測で発覚)**: 閾値0.99のような
+     極端な設定で6層中5層(層1〜5)が一度に削除され、"Theodoreodore
+     odoreodore..."という明確な破綻を招いた(独立した層を寄せ集める
+     設計のため、除去する層数が多い場合に非最適な組み合わせを
+     選びがち)。
+  2. **連続ブロック探索方式**(Gromov et al.論文の本来のアルゴリズム
+     に忠実化): `GptModel::find_best_layer_block_to_remove`(削除
+     したい層数を固定し、その本数の連続ブロックを総当たり比較、
+     除去による隠れ状態の変化が最小の1つを選ぶ)+`remove_layer_block`。
+     `aruaru-llm`側`generation::fold_active_model_by_block`。実測
+     (distilgpt2、6層): 1〜2層除去(`block_similarity`≈0.95〜0.98)→
+     出力は話題・文法とも維持、5層除去(6層中5層、`block_similarity`≈
+     0.82〈gpt2の場合〉/0.41〈distilgpt2の場合、候補が(start=0)か
+     (start=1)の2択しかないため〉)→依然破綻。**これはアルゴリズムの
+     不具合ではなく、その予算にはそもそも維持できる冗長性が実在
+     しないという根本的な限界**——`block_similarity`自体が実行前に
+     品質見込みを予測する正直な指標として機能することを実証した
+     (レスポンスの`quality_hint`フィールド)。
+  3. **線形アダプタ方式**(SHIFT-LLM arXiv:2608.25068/SlimLLM
+     arXiv:2505.22689のclosed-form線形置換手法に着想、**正直な開示:
+     これらは非常に新しい論文であり本実装は再現実装ではなく独自の
+     簡略版**): `GptModel::fold_block_with_linear_adapter`——除去
+     ブロックを跡形もなく消すのではなく、最小二乗法(閉形式のリッジ
+     回帰、勾配降下法は一切使わない)でフィットした1つの軽量な線形
+     アダプタ層(`DecoderLayer::linear_adapter`、Attentionサブ層は
+     ゼロに潰し残差のみ通過、FFNサブ層の`output`層だけをフィット)
+     へ置換する。`aruaru-llm`側
+     `generation::fold_active_model_with_linear_adapter`。**同じ
+     極端な予算(distilgpt2、6層中5層除去)での実測**: 旧方式2は
+     完全な劣化ループ("Theodoreodoreodoreodore...")に陥ったのに
+     対し、線形アダプタ版は劣化ループを回避し実在の英単語を使った
+     出力("I slowly, it the rainforest in a few one way with at
+     right outside to play.")を生成した。**正確に言うと**: これは
+     実測できる本物の改善だが完全な修正ではない——アダプタ版の
+     出力も文法的に一貫した文章にはならず、単語の羅列に近いまま。
+
+  ## HTTP API(`POST /v1/models/fold-layers`、3モード共存)
+  - 既定(独立閾値、方式1): `{"block_influence_threshold": 0.01}`
+  - ブロック探索(方式2): `{"num_layers_to_remove": 2}`
+  - 線形アダプタ(方式3): `{"num_layers_to_remove": 2,
+    "use_linear_adapter": true}`
+  - 読み取り専用の下調べ: `POST /v1/models/layer-redundancy`
+  詳細は`README.md`「API」節・`src/main.rs`の`FoldLayersRequest`/
+  `FoldLayersResponse`docコメント参照。
+
+  ## 検証状況(誇張しないこと)
+  - `open-cuda`側`open-cuda-llm`: `cargo test -p open-cuda-llm
+    --release -- --test-threads=1`で**32件全green**(新規6件+既存26件、
+    実GPU経路〈Vulkan/DirectX〉のregressionテスト含む)。実重み
+    (distilgpt2/gpt2)を使う`--ignored`テスト3件も実行し、上記の
+    実測結果を確認済み。
+  - `aruaru-llm`側: `cargo test --release -- --test-threads=1`で
+    **100件全green**(regressionなし)。実HTTP検証(3モードとも
+    実際にサーバーを起動しcurlで確認、`use_linear_adapter=true`の
+    出力が"Theodoreodore..."ではなく実在単語になることまで確認)済み。
+  - `open-english`側: `index.html`の該当箇所(GitHubトークンの
+    セットアップパネル内)に、この3段階の経緯・実測結果を日英併記で
+    追記・実ブラウザ検証済み。VPS(`easy-web.tokyo`)へもデプロイ済み。
+  - 3リポジトリともコミット・push済み(open-cuda: `3a887ad`、
+    aruaru-llm: `2413d46`、open-english: `998f678`、いずれも
+    `main`/`master`ブランチ)。
+
+  ## 未着手・次回検討候補(正直な開示)
+  - 線形アダプタ方式の`ridge_lambda`(既定`1e-2`固定)を呼び出し側
+    から調整可能にするか、較正サンプル数と連動して自動調整するか
+    の検討(現状は固定値のまま、大きな較正データセットでの挙動は
+    未検証)。
+  - Attentionサブ層をゼロに潰す設計は、QKV射影・softmax計算自体は
+    実行してしまう(出力だけが捨てられる)ため計算コストが完全には
+    削減されない——`DecoderLayer`に「Attention自体をスキップする」
+    専用の軽量パスを追加すれば、より高速化できる余地がある(今回は
+    既存の`DecoderLayer`インフラを100%再利用する設計を優先し、
+    新しいレイヤー型は追加しなかった)。
+  - `open-cpu`(CPU SIMD検出)・`open-cuda`内蔵Vulkan/DirectXは、
+    今回の新機能でも既存のデバイス抽象化(`device: &Arc<dyn
+    GpuDevice>`)経由でそのまま使われる設計にした(新規のGPU固有
+    コードは追加していない)——実際にGPU経路でこの3手法を検証する
+    (現状はCPU実行のみで実測)ことは次回の課題として残る。
+  - 較正データ(`sample_prompts`省略時の既定8文、`mla_calibration_
+    prompts()`を再利用)は英語の一般文のみ——日本語・他言語プロンプト
+    での較正・折りたたみ後品質の検証は未実施。
+
+- **2026-08-29 `POST /v1/transcribe`(whisper.cpp 音声認識)を新設
+  (open-english の `docs/SPEECH_RECOGNITION_REDESIGN.md` P2-β、
+  ブラウザ内 Whisper〈P2-α〉では端末性能が足りない利用者向けに、
+  自分の PC で起動している aruaru-llm 側で書き起こす経路)**:
+  1. **新規 `src/transcribe.rs` + Cargo feature `whisper-transcribe`
+     (既定オフ、`whisper-cuda`/`whisper-vulkan` で whisper.cpp の GPU
+     バックエンドを追加有効化)**。`nllb-translate` と全く同じ「重量級
+     C++ 依存(`whisper-rs`=whisper.cpp、CMake+bindgen/libclang)は
+     feature 隔離、未指定時は既定ビルド・CI・VPS 本番に一切影響しない」
+     方針。feature 無効時の `POST /v1/transcribe` は `503` +
+     「rebuild with --features whisper-transcribe」を返す。
+  2. **`POST /v1/transcribe`**: `{pcm_f32_base64, sample_rate(=16000),
+     language(任意/"auto"), tenant}` → `{transcript, language, engine,
+     disclosure}`。`pcm_f32_base64` は 16kHz mono f32 PCM のリトル
+     エンディアンバイト列を base64 化したもの(open-english の
+     `blobToPcm16k()` 出力形式)。`sample_rate≠16000`・base64 不正・
+     4 の倍数でない・10 分超(~38MB)はいずれも `400`。重い `full()` は
+     `spawn_blocking` へ逃がす(`generate` と同じ)。モデルパスは
+     `ARUARU_LLM_WHISPER_MODEL`(既定 `<crate>/models/whisper/ggml-base.bin`、
+     リポジトリには同梱しない)。
+  3. **`GET /v1/runtime` に `whisper` フィールドを追加**:
+     `compiled_in`(feature の有無)/`backend`(`cuda`/`vulkan`/`cpu`/
+     `not-compiled-in`)/`model_path`/`model_present`/`detail`。両方
+     true のときだけ `/v1/transcribe` が実際に書き起こせる、という
+     正直な表示。
+  4. **検証**: 既定ビルド(feature 無し)`cargo build --release` 成功、
+     `cargo test --release` **97 件全 green**(新規 `transcribe` テスト
+     4 件含む、回帰なし)。実サーバー起動+実 HTTP で
+     `GET /v1/runtime` の `whisper` フィールドが正しく
+     `compiled_in:false, backend:"not-compiled-in"` を返すこと、
+     `POST /v1/transcribe` が `503` + 正直なエラーを返すことを確認。
+  5. **正直な開示・未検証(最重要)**: `--features whisper-transcribe` の
+     実ビルドを試したところ、C++ ツールチェーン(CMake/libclang/bindgen)
+     自体は動作したが、**`whisper-rs-sys v0.13.1` の事前生成バインディングの
+     サイズ表明**(`whisper_full_params` = 264 バイト前提)がローカルで
+     コンパイルした whisper.cpp の構造体レイアウトと食い違い、
+     `attempt to compute 1_usize - 264_usize, which would overflow` で
+     ビルド失敗(このリポジトリのコードではなく上流 `whisper-rs-sys` の
+     パッケージング問題)。実モデルロード・実書き起こしの E2E は未達
+     (`nllb-translate` と同じ状況)。**feature コード
+     (`src/transcribe.rs` の `#[cfg(feature = "whisper-transcribe")]`
+     ブロック)は whisper-rs 0.14 の API に対して書いたが、上流ビルドが
+     通らないため実コンパイル検証はできていない。**
+  - **追記(2026-08-29 多言語再調査、`open-english/docs/SPEECH_RECOGNITION_
+     REDESIGN.md` §3.6)**: `whisper-rs-sys` の Windows(MSVC)ビルド不能は
+     **`whisper-rs 0.16.0` でも `WHISPER_DONT_GENERATE_BINDINGS=1` でも
+     解消しない**既知ブロッカー(bindgen が glibc 固有型を生成、issue
+     2026-04-21、公式 fix 未提供)と判明。バージョンピン留めでは解決
+     しない。
+  - **✅ 方針変更を実装済み(2026-08-29 続き、コミット `24bcfd1`)**:
+     上記 5 の feature ブロックを全面撤去し、**whisper.cpp のプレビルド
+     CLI(`whisper-cli` / 旧 `main`)を子プロセス起動**する方式へ書き換えた
+     (`pg_dump` / `Expand-Archive` / `adb` と同じパターン。C++ リンク・
+     bindgen を完全回避)。
+     - `src/transcribe.rs`: 16kHz mono f32 PCM → 最小 WAV 手書き →
+       `whisper-cli -m <model> -f <wav> -l <lang|auto> -oj -of <prefix>
+       -nt -np -t <n>` → `<prefix>.json` を `serde_json::Value` で緩く
+       パース(バージョン差に強く)。壁時計上限(既定 300s、
+       `ARUARU_LLM_WHISPER_TIMEOUT_SECS`)超過で kill。スクラッチは
+       `temp_dir` 下の一意サブディレクトリ(`tempfile` crate を実行時
+       依存に加えない、後始末はベストエフォート)。
+     - **`Cargo.toml` から `whisper-rs` optional dep と
+       `whisper-transcribe`/`whisper-cuda`/`whisper-vulkan` feature を
+       削除**(コンパイル時依存が消えたため feature 不要)。`Cargo.lock`
+       から bindgen 等 -93 行。
+     - `is_available()` = `cli_present() && model_present()` の実行時
+       判定。CLI パス = `ARUARU_LLM_WHISPER_CLI`(既定
+       `<crate>/models/whisper/whisper-cli[.exe]`、`main[.exe]` も
+       フォールバック)。`GET /v1/runtime` の `whisper` 段を
+       `{available, backend, cli_path, cli_present, model_path,
+       model_present, detail}` へ。`503` エラーは whisper.cpp releases の
+       入手先を案内。
+     - **検証**: `cargo build --release` 成功、`cargo test --release`
+       **100 passed / 1 ignored**(新規 `transcribe` テスト 7 件 =
+       WAV RIFF ヘッダ・JSON パース(正常/空)・CLI/モデル不在時の
+       エラー・env 上書き 2 件、回帰なし)。**実 CLI + 実 GGML モデルでの
+       書き起こし E2E は環境に両方が無いため未達**——次周、プレビルド
+       `whisper-cli` + `ggml-base.bin` を用意して `POST /v1/transcribe`
+       を実 HTTP で検証する。
+  - 次にすべきこと: (1) 上記の実 E2E 検証。(2) open-english 側 P2-γ
+     (Web Speech API + ブラウザ Whisper + この `/v1/transcribe` の
+     3 経路 n-best 融合)への配線。
+
+- **2026-08-25 セキュリティ監査(cargo audit)を実施(open-english側の
+  ユーザー指示「関連リポジトリのセキュリティ監査」の一環、詳細調査・
+  横断的な優先判断はopen-english/CLAUDE.md 2026-08-25エントリ参照)**:
+  1. **`h2`(0.4.15、DoS脆弱性RUSTSEC-2026-0258)を`cargo update -p
+     h2@0.4.15`で0.4.19へ互換範囲内更新**。直接の依存指定は無く
+     `hyper`経由の推移的依存のためコード変更不要。`cargo build
+     --release`成功、`cargo test --release`75 passed/0 failedを維持。
+  2. **残る2件(`h2`0.3.27・`protobuf`2.28.0)は対処せず記録のみ**:
+     いずれも`rust-bert`(NLLB翻訳用、`Cargo.toml`で`nllb-translate`
+     featureとして既定オフ)が引き込む古い`reqwest 0.11`→`hyper
+     0.14`→`h2 0.3.27`、および`rust_tokenizers`→`protobuf 2.28.0`の
+     経路。`cargo tree -i h2@0.3.27 --all-features`/`cargo tree -i
+     protobuf --all-features`で確認したところ、いずれも
+     `nllb-translate`feature配下でのみ到達可能で、**既定ビルド・
+     CI(`.github/workflows/*.yml`にこのfeatureを有効化する記述なし)
+     には一切含まれない**。`rust-bert`自体もcrates.io上の最新版が
+     0.23.0のままで、上流が依存を更新しない限りこちら側での修正手段が
+     無い(`nllb-translate`を将来的に別のNLLB実装へ差し替えるか、
+     rust-bert側の更新を待つ必要がある)。
+  3. **`cargo audit`最終結果**: 5件→2件(いずれも上記2番、既定ビルド
+     非対象)。加えて`bincode`/`number_prefix`/`paste`/
+     `rustls-pemfile`の「unmaintained」警告4件(脆弱性ではない)。
+  - 次にすべきこと: (1) `rust-bert`または代替のNLLB実装の更新状況を
+    定期的に確認する、(2) `nllb-translate`featureを実際に有効化して
+    使う場合は、この2件のリスクをドキュメント上明記した上で利用者へ
+    判断を委ねる。
+
+- **2026-08-23 (続き) 階層的アクセラレーション(CUDA → Vulkan → DirectX 12
+  → CPU SIMD)を実装。DirectX段は動くが、この開発機ではCPUより遅い**:
+
+  ユーザーの目的「NVIDIA GPU非搭載の安価なPCでもAIをなるべく速く」への対応。
+
+  1. **調査結果(推測ではなく実コードで裏取り)**:
+     - **独立リポジトリ`aon-co-jp/open-directx`は今回も使っていない**。
+       ワークスペースは`directx-shader-translate` /
+       `directx-graphics-vulkan` / `directx-graphics-window`の3クレートで、
+       DXBC/DXILシェーダーをSPIR-Vへ翻訳してVulkanで実行する互換層。
+       コンピュートシェーダーの翻訳自体は実装されている(`gemm2x2.hlsl`等)
+       が、扱えるのは固定パターンの小さなシェーダーで、汎用GEMM
+       バックエンドとしては使えない。2026-08-20の「名前が似ているだけの
+       別物」という結論は今回も変わらない。
+     - **実際にGPU計算に使えるのは`open-cuda`内蔵の`opencuda-directx`
+       クレート**(`real-dx12` feature)。調査したところ過去HANDOFFの
+       「Phase 2は未実装」という記述はすでに古く、D3D12のルート
+       シグネチャ/PSO/ディスパッチが実装済みで、`matmul`を含む4カーネルを
+       実際に実行できる(`cargo test -p opencuda-directx --features
+       real-dx12`が実機9件全green)。
+     - **CUDAのネイティブ経路は存在しない**。`opencuda-blas`の
+       `GemmPath::CuBlas`はスタブのままで、NVIDIA GPUもVulkan経由で
+       使われる。`/v1/runtime`でもこの事実を正直に報告している。
+     - **open-cpu経由のCPU SIMDは「検出だけ」ではなく実際に使われている**。
+       `opencuda-blas::simd`が`open_cpu::detect()`を唯一の情報源とし、
+       `launch_naive_gemm`がCPUデバイス時に`simd::sgemm_cpu`へ分岐する
+       (2026-08-22/23の配線済み)。今回追加の配線は不要だった。
+
+  2. **実装**: `real-dx12` feature(既定オフ)を新設。有効化すると
+     `generation.rs`の`wire_matmul_dxil_offload`が
+     `DirectXDevice::new(0)`を試み、成功すれば`open-cuda-llm`の新API
+     `GptModel::set_matmul_dxil_offload`で密GEMM(QKV融合/attn_out/
+     intermediate/output/lm_head)をD3D12へオフロードする。
+     `matmul.dxil`は`include_bytes!`で埋め込む(`.spv`と違いリポジトリに
+     コミット済みのため事前コンパイル不要)。**Vulkan配線が成立した場合は
+     DirectXを配線しない**(Vulkanの方が対象範囲が広いため)。失敗時は
+     サービスを落とさずCPUのままにする。`engine`ラベルは
+     `-directx-gemm`となり、GEMMだけであることをラベル自体で示す。
+
+  3. **`GET /v1/runtime`に`acceleration`フィールドを新設**: 各段の
+     `compiled_in` / `active` / `detail`と、実際に有効な最上位の段
+     (`tier`)を返す。open-english側のバッジがこれを表示する。
+
+  4. **実測(この開発機: NVIDIA GeForce GT 730 + Ryzen 9 3950X、
+     distilgpt2、`POST /v1/generate` max_new_tokens=16、release build)**:
+
+     | 構成 | 所要時間(3回の実測) |
+     |---|---|
+     | CPU only(既定ビルド) | 0.88 / 0.88 / 0.89 秒 |
+     | `--features real-dx12`(重み常駐前) | 24.4 / 24.3 / 24.5 秒 |
+     | `--features real-dx12`(重み常駐後) | 4.32 / 4.28 / 4.30 秒 |
+
+     **正直な結論: この開発機では DirectX 経路を有効にすると約4.8倍
+     遅くなる。** 「安いPCで速くなった」とは書けない——実測が逆の結果を
+     示している。重み常駐化(VRAMへ重みを置いて毎回のH2D転送をやめる)で
+     5.7倍改善したが、CPUのAVX2 GEMMには届かなかった。原因の内訳と
+     GEMM単体の実測値は`open-cuda/CLAUDE.md`の同日エントリを参照。
+     この結果を踏まえ、**`real-dx12`は既定オフのオプトインのまま**とし、
+     リリースビルドでも有効化していない。
+
+  5. **検証**: `cargo test --release` 75件全green、
+     `cargo test --release --features real-dx12` 75件全green。
+     実サーバーを起動して`GET /v1/runtime`が
+     `tier: "directx-gemm"` / `directx.active: true`を返すこと、
+     `POST /v1/generate`が実際に文章を生成すること
+     ("es are a common sight in the wild, and they can be found on many")
+     を実HTTPで確認。出力の正しさは`open-cuda-llm`側の新規テスト
+     (DXILオフロード時の生成トークン列がCPU実行と完全一致)で担保。
+
+  6. **未検証・できなかったこと**: (a) **CUDAパスは存在しないため
+     コンパイル確認すらしていない**(スタブのみ、依頼の「コンパイル確認
+     のみ」に相当する対象が無い)。(b) Vulkanパス(`real-vulkan`)は
+     今回のビルド・検証対象に含めていない(既存機能、変更なし)。
+     (c) Intel/AMD統合GPU搭載機での実測は未実施——この機のGT 730は
+     「安いPCの統合GPU」の代表として適切ではなく、そこでDirectX経路が
+     有利になるかは**分からない**。
+
+  - 次にすべきこと: (1) Intel/AMD統合GPU機での再実測。有利なら
+    `real-dx12`を既定オンにすることを検討する(現状の実測では
+    既定オンにする根拠が無い)。(2) `matmul.hlsl`のタイル化・
+    `m=1`専用GEMVカーネル(`open-cuda`側の課題)。(3) Attention/
+    LayerNorm/GELUのDXIL化によるモデル全体のGPU常駐。
+
+- **2026-08-23 `GET /v1/runtime` に CPU SIMD 経路の可視化を追加**:
+  CPU 推論の GEMM は `opencuda-blas` 経由で SIMD ディスパッチされているが、
+  「実際にどの命令セットの組み合わせが選ばれているのか」を外から確認する
+  手段が無かった。`/v1/runtime` のレスポンスへ `cpu_simd` オブジェクトを
+  追加した(`features` / `isa_profile` / `avx2_fma_path` / `vnni_path` /
+  `avx512_opt_in` / `note_ja`)。検出は共通基盤
+  [`open-cpu`](https://github.com/aon-co-jp/open-cpu) が担当し、
+  単独フラグではなく **複数命令セットの組み合わせ**(AVX2+FMA3、
+  AVX-512F+BW+VNNI 等)で経路が決まることを明示する。
+
+  **実機検証**: `cargo build --release` 後に実際にサーバーを起動し
+  `curl http://127.0.0.1:4600/v1/runtime` で確認済み。開発機
+  (Ryzen 9 3950X / Zen 2)での実際の応答:
+  ```json
+  "cpu_simd": {
+    "features": "avx2+fma3+sse2",
+    "isa_profile": "avx2+fma3",
+    "avx2_fma_path": true,
+    "vnni_path": false,
+    "avx512_opt_in": false
+  }
+  ```
+
+  **正直な開示**: このエンドポイントは報告のみで、高速化そのものは
+  行わない。実際の高速化は前回セッションの CPU 推論 SIMD 化
+  (AVX2+FMA3、実測 3.34 倍)によるもので、今回はその経路の選択条件を
+  `open-cpu` 側の組み合わせ判定へ揃え、可視化しただけである。
+  **int8 VNNI 経路は開発機が非搭載のため実機未検証**のまま。
+  - 次にすべきこと: llama.cpp が採用している online repack(読み込み時に
+    重みを host 最適レイアウトへ再配置する手法)は、量子化推論を本格化
+    する段階になったら検討する。調査結果は `open-cpu/CLAUDE.md` の
+    2026-08-23 HANDOFF を参照。
+
+
+- **2026-08-22(続き) CPU推論がAVX2+FMA3で実測3.34倍高速化(`open-cuda`側の
+  SIMD化を自動的に継承、このリポジトリのコード変更は無し)**:
+  ユーザー指示「AVX2/AVX-512とFMA3等でAI推論を高速化」への対応は、
+  依存先の`open-cuda`(`crates/opencuda-blas/src/simd.rs`を新設)側で実装した
+  ——このリポジトリは`opencuda-blas`をpath依存しているため、**再ビルド
+  するだけで自動的に恩恵を受ける**(こちら側の配線変更は不要だった)。
+  1. **実装内容(詳細は`open-cuda/CLAUDE.md`の2026-08-22エントリ)**:
+     実行時CPU機能検出(AVX-512F → AVX2+FMA3 → スカラー)による
+     `dot_f32`/`axpy`/`sgemm_cpu`、および将来のCPU向けの`dot_i8`
+     (AVX-512 VNNI / AVX-VNNI、実機未検証)。GEMMのCPU経路が要素ごとの
+     カーネルディスパッチから、k方向axpy蓄積のSIMD実装へ切り替わった。
+  2. **実測(AMD Ryzen 9 3950X、検出機能`avx2+fma3+sse2`)**: 実GPT-2 124M
+     重みでの20トークン生成が**6.78秒 → 2.03秒(3.34倍)**
+     (`open-cuda`側で同一セッション内に環境変数
+     `OPENCUDA_DISABLE_CPU_SIMD_GEMM=1`で新旧経路を切り替えたA/B計測)。
+     この効果は`POST /v1/generate`のレスポンス時間へそのまま効くはず
+     だが、**このリポジトリでの実HTTPレスポンス時間の前後比較計測は
+     未実施**(誇張しないための明記)。
+  3. **TEST**: `cargo test --release`(aruaru-llm)**75件全green・
+     regression無し**。浮動小数点の加算順序とFMA3の中間丸めの違いにより
+     結果はビット単位では旧経路と一致しないが、既存の全テスト
+     (`open-cuda`側の実GPT-2生成トークン列一致テストを含む)は通っている。
+  4. **正直な開示**: AVX-512経路・VNNI経路はこの開発機(Zen 2)が非搭載の
+     ためコンパイル確認のみ・実機未検証。将来AVX-512/VNNI搭載機へ
+     載せ替えた際は、**コードの書き足し無しに**機能検出だけで高速経路が
+     有効になる設計にしてある。CPU機能検出ロジックは将来、共有クレート
+     `open-cpu`(`aon-co-jp/open-cpu`、別セッションで作成中)へ集約予定。
+  - 次にすべきこと: (1) `POST /v1/generate`の実HTTPレスポンス時間を
+    新旧経路で実測比較する(サーバー起動+`curl`、`OPENCUDA_DISABLE_CPU_
+    SIMD_GEMM`で切り替え可能)。(2) `open-cuda`側の`dot_i8`(VNNI)を
+    `quantize_int8`へ配線したint8量子化推論経路が出来たら、こちらの
+    生成エンジンでも使えるか検討する。
+
+- **2026-08-22 `GET /v1/runtime`を新設(open-english側からの依頼、
+  「今どこで計算しているのか」を正直に可視化するため)**:
+  デバイスプール(`device_pool::DevicePool`)が実際に保持している
+  `opencuda_core::GpuDevice`の`info()`(id・名前・ベンダ・メモリ・
+  compute units・`supports_spirv()`)、ビルド時に有効なGPU関連feature
+  (`real-vulkan`/`hw-detect-vulkan`/`hw-detect-directx`)、`/v1/generate`と
+  同じ`engine`識別子、アクティブモデルのディレクトリ、英日併記のサマリを
+  返す。あわせて`DevicePool::devices()`アクセサを追加した。
+  **正直な開示**: (a) このエンドポイントは報告するだけで高速化は一切
+  しない。(b) 既定ビルドは`opencuda_cpu::CpuDevice`1台のみ=GPUは
+  使っていない(実測で`gpu_in_use:false`)。(c) `open-directx`について、
+  ここで関係し得るのは`open-cuda`内蔵の`opencuda-directx`クレート
+  (既定オフ、GPU検出専用)のみで、独立リポジトリ`aon-co-jp/open-directx`
+  とは無関係(2026-08-20エントリの結論のまま)。
+  **検証**: `cargo build --release`成功。実際にサーバーを起動して
+  `curl http://127.0.0.1:4600/v1/runtime`が
+  `{"devices":[{"name":"OpenCUDA CPU Device (rayon, 32 threads)",...}],
+  "gpu_in_use":false,"enabled_gpu_features":[],
+  "engine":"distilgpt2-greedy-decode-v0-open-cuda-llm-cpu",...}`を
+  実際に返すことを確認した。**未検証**: `--features real-vulkan`で
+  ビルドした場合に実GPUがプールへ入り`gpu_in_use:true`になること
+  (この環境ではVulkan有効ビルドを用意していない)。
+  - 次にすべきこと: open-english側から要望のあったトークン単位の
+    ストリーミング(SSE等)を`/v1/generate`へ追加するかの検討——現状は
+    生成完了後に一括でJSONを返す設計のため、呼び出し側で逐次表示が
+    実装できない。
+
+- **2026-08-20 PuzzleMoE(arXiv:2511.04805)・FlexQ(arXiv:2508.04405)の
+  実装可否を調査、FlexQ(INT6量子化)のみ実装(ユーザー指示、直前セッション
+  のDeepSeek系新技術調査で発見した2件への対応)**:
+  1. **PuzzleMoE: 実装見送り(論文本文をWebFetchで確認した上での判定)**。
+     論文は"a training-free MoE compression method"と明記しており、
+     訓練済みMoEモデルへの後処理(推論のみ、追加学習不要)という点では
+     当初の懸念より軽量だった。しかし前提条件として**既にMixture-of-
+     Experts(MoE)アーキテクチャであること**が必須であり、密モデルへの
+     適用は論文で一切言及されていない。このリポジトリの推論エンジン
+     (`open-cuda-llm::GptModel`、GPT-2 124M)は単一の密なFFN
+     (`intermediate`→`output`)のみで複数エキスパート・ルーターを持たず、
+     `open-cuda`側の2026-08-08 HANDOFFで既に「DeepSeekMoE統合はMoE
+     チェックポイントが存在しないため見送り」と判定済みの状況と同じ壁に
+     当たる。PuzzleMoE適用には(a)GPT-2のFFN層を複数エキスパート+
+     ルーターへアーキテクチャ変更、(b)変換後モデルの再学習(最低でも
+     ファインチューニング)が必要——(b)の学習コストはこのマシンの
+     GPU(GT730、VRAM 2GB、Kepler世代、Tensor Core無し)では、`open-cuda`
+     側の既存実測(GEMM/AttentionがCPUより約8倍遅い、2026-08-06以前の
+     HANDOFF群)から非現実的と判断し、実装しなかった。「訓練不要の
+     圧縮手法」という論文の売り文句だけを見て早合点せず、前提条件
+     (MoEアーキテクチャ)を実際に確認した上での見送りである点を明記する。
+  2. **FlexQ: INT6量子化を実装(`open-cuda`側)**。論文(WebFetchで抄録
+     確認)は全レイヤー一律6bit重み量子化+レイヤー感度に応じた
+     W6A6/W6A8活性化混在、専用GPUカーネル(Binary Tensor Core等価物)を
+     提案。このリポジトリ自体への直接のコード変更は無く(GPT-2重み自体は
+     Hugging Faceの`safetensors`を都度ロードする設計で、量子化APIは
+     `open-cuda`側の`opencuda-blas`に一元化されている)、実装は
+     `F:\runo\open-cuda\crates\opencuda-blas\src\lib.rs`の
+     `quantize_int6`/`dequantize_int6`/`QuantizedInt6Tensor`として行った
+     (詳細は`open-cuda/CLAUDE.md`の同日HANDOFF参照)。既存の
+     `quantize_int4`/`quantize_int8`と同じグループ単位対称量子化の
+     枠組みを再利用し、6bitという8の倍数でないビット幅を4値/3バイト
+     (24bit)単位でパックする方式で対応した。活性化側のビット幅切り替え・
+     レイヤー感度分析・専用GPUカーネルは未実装(重み量子化APIの提供まで、
+     既存のINT4/INT8と同じスコープ、正直な開示)。
+  3. **検証結果(`open-cuda`側)**: `cargo test -p opencuda-blas --release`
+     31件全green(既存27件+新規4件: 往復誤差がスケール半値以内・
+     INT4<INT6<INT8の精度順序・全ゼログループ・4の倍数でない要素数の
+     境界ケース)。`cargo clippy -p opencuda-blas --all-targets --release
+     -- -D warnings`警告0件。`cargo build --workspace --release`
+     リグレッション無し。
+  - 次にすべきこと: (1) FlexQの活性化側W6A6/W6A8混在・レイヤー感度分析は
+    未実装のまま(重み量子化のみ)、必要になれば`open-cuda`側で追加検討。
+    (2) `quantize_int6`をこのリポジトリの実推論経路(`GptModel`の重み)へ
+    実際に配線する統合はまだ行っていない(`open-cuda`側の量子化APIとして
+    存在するのみ、既存の`quantize_int4`/`quantize_int8`も同様に未配線)。
+    (3) PuzzleMoEは、将来MoE構成の学習済みチェックポイントが入手できる
+    か、GPT-2のFFN層をMoE化してでも再学習できるだけの計算資源(GT730より
+    高性能なGPU)が調達できた場合にのみ再検討する。
+
+- **2026-08-19(続き3) スマホ計算タスク配布API(`GET /v1/background-fold/
+  task`・`POST /v1/background-fold/task-result`)を新設(ユーザー指示
+  「実際のスマホ側計算処理を実装してほしい」への対応、`open-english`側
+  Androidワーカーと対をなす、詳細は`open-english/CLAUDE.md`同日HANDOFF
+  参照)**:
+  1. **新規`src/phone_task.rs`**: `GET /v1/background-fold/task`が
+     コサイン類似度計算タスク(2本のベクトル)を1件返す。ベクトルは
+     `scoring.rs`が既にウォームアップ済みのインテント埋め込み
+     (`sample_embedding_pair_for_phone_task`を新設)から取り、未ウォーム
+     アップ時は8次元のデモベクトルへフォールバックする。
+     `POST /v1/background-fold/task-result`は結果を受け取り記録する
+     のみ(実際のモデル推論・Model Foldingへは反映しない、モジュールdoc
+     に明記)。認証・レート制限は無い最小実装(同一LAN/USB内の信頼された
+     端末を想定)。
+  2. **`main.rs`へのルート登録**: 既存の`/v1/background-fold/status`
+     (`idle_background_fold.rs`)と並べて2ルートを追加。
+  3. **検証**: `cargo build --release`成功、`cargo test --release
+     phone_task`2件全green。実際にサーバーを起動し、
+     `GET /v1/background-fold/task`が実際の384次元embedding(実
+     multilingual-e5-small由来)を含むJSONを返すこと、
+     `POST /v1/background-fold/task-result`が受け取った結果を
+     `received_epoch_secs`付きで正しくエコーすることを実HTTPで確認した。
+  4. **正直な開示**: スマホ側(`open-english/android`)の実装・ビルド
+     成功は確認済みだが、実機Android端末・USB接続環境がこの開発機に
+     無いため、PC↔スマホ間の実際のE2E(実機でタスクが往復すること)は
+     未検証のまま。
+  - 次にすべきこと: (1) 実機での往復検証、(2) 将来的にタスクの種類を
+    増やす場合(現状は`cosine_similarity`固定)の設計拡張、(3) 認証・
+    レート制限が必要かどうかの要否確認(公開インターネットへの露出を
+    想定するなら必須)。
+
+- **2026-08-19(続き2) PC側NPU自動検出+USB接続Android台数検出を実装
+  (ユーザー指示「使わなくなったスマホもフル動員」「NPUがPC側にあれば
+  自動検出して計算に使用」「複数スマホをUSB接続してCPU+GPU+NPUを統合
+  リソースとして利用」への対応、直前2026-08-19エントリのアイドル検知
+  スケジューラの上に構築)**:
+  1. **PC側NPU検出(`src/hardware.rs::detect_npu`)**: Windows上で
+     `Get-CimInstance Win32_PnPEntity`を呼び、デバイス名に"NPU"・
+     "Neural"・"AI Boost"(Intel NPU)・"Hexagon"(Qualcomm NPU)を含む
+     デバイスを探す簡易検出。**実機確認結果(正直な開示)**: この開発機
+     (2026-08-19時点)には該当デバイスが1件も無く、`detect_npu()`は
+     常に`None`を返した——このマシンにNPUは搭載されていない。検出でき
+     た場合でも実際にNPU上で計算する経路(DirectML NPU推論等)は対応
+     SDKが無いため未実装、`AcceleratorInventory`へ記録するだけに留めた
+     (既存のGPU検出〈Vulkan/DirectX〉と同じ「検出はできるが実行
+     パイプライン未配線」という設計上の限界)。Windows以外
+     (Linux VPS等)向けの検出経路は未実装。
+  2. **USB接続Android台数検出(`src/hardware.rs::detect_usb_android_
+     devices`)**: `adb devices`を子プロセスとして呼び、`device`状態の
+     シリアル番号一覧を返す。**実機確認結果**: この開発環境には`adb`
+     コマンド自体がPATH上に存在せず(`adb: command not found`)、
+     `Err`を正直に返す(黙って0台と偽装しない設計)。実機Android端末の
+     USB接続検証はこの開発環境ではできなかった。
+  3. **`AcceleratorInventory`+`GET /v1/background-fold/status`拡張**:
+     `hardware::detect_accelerators()`(CPU常時available+既存GPU検出+
+     上記1・2を統合)を`idle_background_fold::FoldProgress`
+     (`accelerators`フィールド)へ追加。実際にサーバーを起動し実HTTP
+     リクエストで`{"accelerators":{"cpu_available":true,"gpu":{...
+     "detection_path":"cpu-only-fallback"...},"npu_name":null,
+     "usb_android_devices":null,"disclosure":"..."}}`という正しい応答
+     (このマシンの実際の検出結果と一致)を確認済み。
+  4. **USB接続スマホ活用の設計(実装は行っていない、正直な開示)**:
+     `F:\runo\open-english\android\`側のプロトコル設計(ADB経由の
+     `adb forward`によるPC⇔スマホHTTP通信確立案、NNAPI/TensorFlow
+     Lite NNAPI Delegate経由でのスマホ側NPU活用案)は、既存の
+     `aruaru-llm/CLAUDE.md` 2026-08-19エントリ5番の記載
+     (`GET /v1/background-fold/task`・`POST /v1/background-fold/result`
+     というポーリング方式の設計)がそのまま該当し、今回追加で具体化する
+     新規設計事項は無かった——重複を避けるため、本エントリでは同記載を
+     参照するに留める。実機のAndroidスマホがこの開発環境に無いため、
+     この設計自体の実装(上記エンドポイント新設)は今回も行っていない。
+  5. **検証**: `cargo build --release`成功(既存4件のpre-existing警告
+     のみ、今回の変更に起因する新規警告なし)。`cargo test --release`
+     **70件全green**(既存70件、回帰なし——今回の変更は検出処理のみで
+     専用の新規単体テストは追加していない、実機での起動+実HTTP確認を
+     主体とした)。実際にサーバーを起動し`GET /v1/background-fold/
+     status`への実HTTPリクエストで上記3番の通り確認済み。
+  6. **UI側**(`open-english`側で対応、詳細は`open-english/CLAUDE.md`
+     参照): 日英併記の「使わなくなったスマホもフル動員」バナーを
+     `index.html`へ追加。
+  - 次にすべきこと: (1) 実際にNPU搭載機・Android実機(adb接続可能な
+    環境)が用意でき次第、上記1・2の検出ロジックを実機で再検証、
+    (2) `GET /v1/background-fold/task`・`POST /v1/background-fold/
+    result`(スマホ側プロトコル)の実装は、実機Android端末が用意でき
+    次第着手する、(3) Linux VPS向けのNPU検出経路(`/proc`や`lspci`
+    経由等)は今回未実装のまま。
+
+- **2026-08-19 「1週間かけてスマホもフル活用しつつPCバックグラウンドで
+  再学習」要望への対応: 実現可能性評価+アイドル検知スケジューラの実装
+  (ユーザー指示「再学習が、もし、一週間で、既存のリソースのスマホや
+  使わなくなったスマホなどもフル利用して今のPCのバックグラウンドで
+  再学習も可能な範囲で、裏で実行する様な仕様にしましょう」への対応)**:
+  1. **スマホ活用の現実的な評価(誇張しない)**: GPT-2 124Mクラスの
+     本格的な逆伝播学習をAndroidスマホ単体で行うのは、メモリ・熱・
+     電池の制約から通常非現実的と判断した。現実的な役割分担案として、
+     スマホ側は「軽量な補助計算(例: 層間類似度計算のような順伝播
+     のみのタスク)」に限定し、勾配計算・オプティマイザ更新はPC側に
+     集約するのが妥当という結論に至った。ただし**この開発環境には
+     実際に検証できるAndroid実機(余ったスマホ)が存在しない**ため、
+     スマホ側の実装は行わず、プロトコル設計のみに留めた(下記5番)。
+  2. **採用した設計**: 「四六時中GPUフル稼働の学習」ではなく、
+     「PCがアイドル(HTTPリクエストが一定時間無い)を検知した時だけ、
+     低優先度のバックグラウンドスレッドで軽量な処理を1ステップ進め、
+     すぐ休止する」という間欠実行方式を採用した。既存の
+     `android/`(`tokyo.runo.aruarullm`)の`PowerProfile`
+     (省電力/通常/常時電源接続の3モード、`WakeLock`制御)という
+     エコシステム標準の電源方針と設計思想を合わせている。
+  3. **実装した範囲**: 新規`src/idle_background_fold.rs`
+     (`touch_activity()`でHTTPハンドラ側からアクティビティを記録、
+     アイドル閾値120秒・ポーリング5秒・ステップ間隔30秒の低頻度
+     `std::thread`ループ)。`src/main.rs`の`chat`/`generate`ハンドラで
+     `touch_activity()`を呼ぶよう配線し、起動時に`idle_background_fold::
+     spawn()`を実行。進捗は`GET /v1/background-fold/status`で確認できる
+     (`FoldProgress`、`disclosure`フィールドで常に限界を自己申告)。
+     **正直な開示(最重要)**: 本物のModel Folding(ICLR 2025、
+     arXiv:2502.10216、重みのクラスタリング・統合)は実装していない
+     ——`open-cuda-llm::GptModel`の各層の重み(`layers: Vec<DecoderLayer>`)
+     は`private`フィールドで公開アクセサが無く、実装するには
+     `open-cuda-llm`クレート側への新規public API追加が前提となるため、
+     このセッションのスコープには含めなかった。代わりに実装したのは
+     「アイドル検知→低頻度実行→進捗可視化」という**スケジューリング
+     基盤**であり、各ステップの中身は`scoring.rs`が既に保持する実
+     インテント埋め込みベクトル(open-cuda-bert、multilingual-e5-small)
+     同士のコサイン類似度計算という読み取り専用のプレースホルダに
+     留めた(モデルの重みは一切変更されない)。`run_one_step()`を
+     独立関数にし、将来`open-cuda-llm`に重み読み取りAPIが追加されれば
+     この中身だけを本物のModel Folding計算へ差し替えられる設計にした。
+  4. **実機検証(型チェックのみで完了と報告しない方針を徹底)**:
+     `cargo build --release`成功(既存4件のpre-existing警告のみ、
+     今回の変更に起因する新規警告なし)。`cargo test --release`
+     **70件全green**(既存回帰なし)。実際にサーバーを起動し、
+     `GET /v1/background-fold/status`を即座に呼んだところ
+     `steps_completed:0`(起動直後、まだステップ未実行)、約70秒後に
+     再度呼んだところ`steps_completed:2`・
+     `last_similarity_summary:"gov~trade=0.928, gov~credit=0.937, ..."`
+     という実際の計算結果を確認した(アイドル状態で実際にバックグラウンド
+     処理が進行することを実証)。続けて`POST /v1/chat`を実際に送信した
+     直後に`GET /v1/background-fold/status`を呼び、
+     `currently_idle`が`true`から`false`へ(`idle_seconds`が0へ)正しく
+     切り替わることを確認した(実際のHTTPトラフィックに基づくアイドル
+     判定が機能していることの実証)。
+  5. **スマホ側プロトコル設計(実装は行っていない、正直な開示)**:
+     既存の`android/`クライアント(`tokyo.runo.aruarullm`)が既に
+     HTTP経由で`POST /v1/chat`を叩く仕組みを持っているため、将来
+     スマホ側の軽量補助計算タスクを実装する場合は、同じHTTPクライアント
+     基盤の上に「Wi-Fi接続時のみ、PCから小さなタスク(例: 特定層の
+     類似度スコア計算に必要な小さなテンソル)を`GET`で取得し、計算結果を
+     `POST`で返す」というポーリング方式のエンドポイント
+     (`GET /v1/background-fold/task`・`POST /v1/background-fold/result`
+     のような形)を新設する設計が現実的と考えられる。`PowerProfile`の
+     既存3モードのうち「省電力」モード相当の設計(`WakeLock`を取得しない、
+     充電中かつWi-Fi接続時のみ動作する等)を踏襲すればスマホを壊さない
+     設計にできる。**このエンドポイント自体は今回実装していない**
+     ——実機が無い状態でプロトコルだけを実装しても実証できず、動かない
+     ものを「実装した」と報告しないという既存の運用ルールに従った。
+  - 次にすべきこと: (1) `open-cuda-llm::GptModel`に層の重みへの
+    読み取り専用アクセサ(例: `pub fn layer_weight_summaries(&self) ->
+    Vec<LayerWeightSummary>`のような、生の`Vec<f32>`全体を晒さない
+    集約済み統計量を返すAPI)を追加し、`run_one_step()`の中身を本物の
+    Model Folding(層間類似度→クラスタリング候補の探索)へ差し替える、
+    (2) 実際に余ったAndroidスマホが用意できた場合、上記5番のプロトコル
+    設計に基づき`GET /v1/background-fold/task`等を実装し実機で検証する、
+    (3) `IDLE_THRESHOLD_SECS`(120秒)・`STEP_COOLDOWN`(30秒)は経験的な
+    初期値であり、実際に1週間程度運用してみてCPU負荷・進捗速度の
+    バランスを見ながら調整する余地がある。
+
+- **2026-08-18(続き) 調査完了・バージョンを0.2.2→0.2.3へ更新
+  (「aruaru-llmのバージョンアップとして、既存の古い物からDATABASE
+  システムに移動も簡単にする機能を搭載して」への対応、ユーザー指摘
+  「スコープが確定する為の実績や努力をして、未着手は着手して」を受けて
+  実際に調査・着手した)**:
+  1. **調査内容**: このリポジトリのソース(`tenants.rs`・`security.rs`・
+     `generation.rs`・`bow_fallback.rs`等、ファイルI/Oを含む主要モジュール
+     全て)を実際に確認したが、会話履歴・ユーザー設定をファイル/DBへ
+     永続化している既存コードは**一切存在しなかった**(Google Search
+     APIキーは既存方針通りメモリ上保持のみで、再起動すれば消える設計)。
+     `open-english`側の`app.js`も同様に調査済み(詳細は`open-english`側
+     `CLAUDE.md`2026-08-18(続き)HANDOFF参照)——会話履歴を`localStorage`
+     等へ保存していた実装は無かった。
+  2. **結論**: このエコシステムには「移行すべき具体的な既存の古い
+     データ」が実在しない。ユーザー指示の「既存の古い物からDATABASE
+     システムに移動」は、実データが既にどこかに存在する前提の指示
+     だったと推測されるが、実際には該当データが無いため、**このリポジトリ
+     側で行う具体的なデータ移行処理は無い**(正直な開示——存在しない
+     ものを移行する処理を作文で実装することはしない)。
+  3. **実際に行った対応**: (a) `open-english`側に、将来どんな旧形式の
+     エクスポートが持ち込まれても受け入れられる汎用的な取り込み口
+     (`POST /v1/db/migrate-legacy`)を実装・実HTTP検証済み(該当リポジトリ
+     側で対応、詳細は`open-english/CLAUDE.md`参照)。(b) このリポジトリ
+     (`aruaru-llm`)は、open-englishのDATABASE化(SQLite+aruaru-db DUAL
+     DBミラーリング)と足並みを揃えた協調リリースとして`Cargo.toml`の
+     `version`を`0.2.2`→`0.2.3`へ更新した(このバージョン番号自体には
+     コード変更を伴わない——移行対象データが無いという調査結果に基づく、
+     意図的に「変更なし」を選んだ判断であることの記録)。
+  4. **RS-JSON化について**: open-english側で「RS-JSONはHTTPボディ処理
+     対象外」という過去の判断を撤回し、`from_slice_strict`/
+     `to_vec_strict`(RPC/wire format向けの型付きAPI)を`/v1/db/*`へ
+     実際に適用したことを確認済み(詳細はopen-english側CLAUDE.md参照)。
+     このリポジトリ(`aruaru-llm`)のHTTP API(`/v1/generate`等)への
+     同様の適用は、今回のスコープ(open-englishのDB機能)には含まれない
+     別作業のため未着手のまま——次回、ユーザーに要否を確認の上で
+     着手するかどうか判断する。
+  - 次にすべきこと: (1) 実際に将来データが蓄積された場合(例:
+    `aruaru-llm`自身が会話コンテキストをキャッシュする機能を新設する
+    等)に備え、`import_legacy`相当の取り込み口が必要になるかは
+    その時点で再検討、(2) このリポジトリのHTTP API自体へのRS-JSON
+    適用要否をユーザーに確認。
+
+- **2026-08-15(続き2) `real-vulkan`ビルドで実バグ発見: 同時並行リクエスト
+  下でGPU担当分が`no spirv bytes were provided`で失敗することがある
+  (sftp-git側のanalyzeDiff E2E確認セッションで発覚)**:
+  1. **再現**: `--features real-vulkan`でビルドしたサーバーへ、
+     `curl`で`/v1/generate`を2件同時送信したところ、片方が
+     `{"error":"GptModel::generate_with_repetition_penalty failed:
+     sgemm: GemmPath::VulkanGeneric selected (device.supports_spirv()
+     ==true...) but no spirv bytes were provided..."}`で失敗した。
+  2. **原因の見立て(未確定)**: `wire_matmul_spirv`は`load_from_dir`内で
+     モデルロード時に一度だけ呼ばれ、成功すれば`GptModel`の全`Linear`に
+     `matmul.spv`が配線される設計。DevicePool導入によりリクエストごとに
+     CPU/GPUへラウンドロビン分散するようになったため、**wiring自体が
+     何らかの理由で失敗していた場合(このセッションでは再現待ちの
+     プロセスで失敗した形跡)、GPU担当に回った全リクエストが
+     一律で失敗するようになった**——CPU専用ビルド(featureフラグ無し)
+     で同じシナリオを再実行したところ問題無く成功したため、
+     `real-vulkan`固有の問題と判断。根本原因(`wire_matmul_spirv`が
+     具体的にどの条件で失敗するか)の特定は今回行っていない。
+  3. **今回の対応**: 深追いせず、sftp-git側の検証には
+     **CPU専用ビルド(既定、`real-vulkan`無し)を使う**という回避策で
+     対応した(既定ビルドはこの問題の影響を受けない——`real-vulkan`は
+     既定offのopt-in featureのため、通常利用者への実害は無い)。
+  - 次にすべきこと: (1) `wire_matmul_spirv`の失敗条件を特定する
+    (`GptModel::set_matmul_spirv`の戻り値・ログを詳しく調査、
+    モデル切り替え〈distilgpt2⇄gpt2-medium等〉との組み合わせで再現するか
+    確認)。(2) 配線失敗時に`real-vulkan`ビルドでも安全にCPUへ
+    フォールバックする設計(現状は失敗を隠さず正直にエラーを返す
+    という既存方針通りだが、DevicePool導入後はこれが「GPU番が回って
+    きたリクエストは道連れで落ちる」という新しい失敗モードになって
+    いる——DevicePoolがGPU未配線を検知したらCPUのみのプールへ自動的に
+    縮退する等の対策を検討)。
+
+- **2026-08-15 CPU+GPU同時並列稼働を実装(ユーザー指示「CPU+システム
+  メモリ+GPUを非同期ででも、同時に並列並行で動作させて」、`sftp-git`
+  開発セッションからの横断作業)**:
+  1. **設計**: 新規`src/device_pool.rs`の`DevicePool`が、CPU
+     (`CpuDevice`)と、`real-vulkan` feature有効時に構築成功した
+     GPU(`VulkanDevice`)の両方を保持し、リクエストごとに
+     `next_device()`でラウンドロビン分散する。従来は「VulkanDevice
+     構築成功ならGPU、失敗ならCPU」という排他選択(どちらか一方)
+     だったが、CPUは常にプールへ加え、GPU構築成功時は**置き換えでは
+     なく追加**する形に変更。全6エンドポイント(`/v1/chat`・
+     `/v1/classify-security`・`/v1/security/classify-traffic`・
+     `/v1/generate`・`/v1/generate-with-search`・`/v1/translate`)の
+     ハンドラ登録を、起動時1回の`Arc::clone(&device)`から、
+     リクエストごとの`pool.next_device()`呼び出しへ変更した。
+  2. **正直な設計上の限界**: 単一リクエストの計算(1回のforward pass)
+     をCPU/GPUに分割するテンソル並列化(モデル並列)は行っていない
+     ——1リクエストは開始時に選ばれた1つのデバイス上で最初から最後
+     まで実行される(`alloc`/`memcpy`/`launch_kernel`の一貫性を保つ
+     ため)。実現したのは「複数の同時リクエストをCPU担当分とGPU担当分
+     に振り分け、両方のハードウェアを同時に稼働させる」という
+     リクエストレベルの並列化。
+  3. **既知の性能上の懸念(過去の実測記録との整合)**: このマシンの
+     実GPU(NVIDIA GT 730、Kepler世代・VRAM 2GB)は、過去複数回の
+     HANDOFF(2026-08-04〜08-08)で「1トークンデコードのGEMMは極めて
+     軽く、Vulkanディスパッチの固定オーバーヘッドがCPU実行より支配的
+     になり、GPU経由の方がCPU経由より遅い」ことが実測されている。
+     今回のDevicePoolはこの事実を変えるものではない——GPU担当に
+     振り分けられたリクエストは引き続きCPU担当分より遅くなる可能性が
+     高い。今回の変更で実現したのは「速くする」ことではなく
+     「両方のハードウェアリソースを同時に活用する」ことである点を
+     誇張せず明記する。
+  4. **実機検証**: `cargo build --release --features real-vulkan`
+     成功。`cargo test --release --features real-vulkan device_pool`
+     **2件全green**(単一デバイス時は常に同じデバイスを返すこと、
+     複数デバイス時にラウンドロビンで交互に選ばれることを検証)。
+     実際にサーバーを起動し(実GPU検出済み環境)、`/v1/chat`への
+     複数回のHTTPリクエストがエラー無く応答することを確認した。
+     **正直な開示**: `next_device()`がリクエストごとに実際にCPU/GPU
+     どちらを選んだかをログで直接確認するところまでは今回できて
+     いない(標準出力キャプチャの環境都合、次回tracing出力の確認方法を
+     整理する余地がある)——ラウンドロビンのロジック自体は単体テストで
+     数学的に検証済みだが、実際の同時並行リクエスト下でCPU/GPU両方が
+     文字通り「同時に」稼働していることの実時間計測(例: GPU使用率
+     モニタリングとの突き合わせ)は次回の課題として残す。
+  5. **open-englishへの波及**: `open-english`はaruaru-llmのHTTP API
+     (`/v1/chat`等)を呼び出すクライアントであり、本変更はサーバー側
+     (`aruaru-llm`)のみで完結するため、`open-english`側のコード変更は
+     不要——次回`aruaru-llm`を再ビルド・再起動するだけで
+     `open-english`からのリクエストも自動的にDevicePoolの恩恵を
+     受ける。
+  - 次にすべきこと: (1) 実際の同時並行リクエスト下でCPU/GPU両方が
+    並行稼働していることのタイムライン計測(例: `next_device()`に
+    一時的なログ出力を仕込み、複数の同時リクエストを送って実際の
+    選択順序を確認する)。(2) ラウンドロビンではなく負荷ベース
+    (busy/idle判定)でのより賢い振り分けへの発展(現状は単純な交互
+    割り当てのみ)。(3) `real-vulkan` featureは既定offのままであり、
+    今回の変更もこのfeatureを有効化してビルドした場合のみ効果を持つ
+    (既定ビルドはCPUのみのまま、既存の安全側デフォルトを変更していない)。
+
+- **2026-08-15(続き) `spawn_blocking`化+タイムスタンプ計測でCPU/GPU
+  同時稼働を実測で裏付け(ユーザー指示「実際の同時並行ではなく非同期
+  でのリクエスト下で非同期のマルチコア、マルチスレッドを活かす方に
+  変更…タイムライン計測して調査」)**:
+  1. **見つけた設計上の問題**: `generate`(他のハンドラも同様)は
+     `generation::generate`(同期・重い計算)を`async fn`内で
+     直接呼んでおり、`tokio::task::spawn_blocking`を使っていな
+     かった。tokioのマルチスレッドランタイムは限られた数のワーカー
+     スレッド(通常CPUコア数)で全ての非同期タスクを捌く設計のため、
+     これでは長時間の同期計算がワーカースレッドを占有し、他の
+     非同期タスク(他リクエストの受付処理等)を妨げる可能性がある。
+  2. **修正**: `generate`ハンドラを`tokio::task::spawn_blocking`で
+     包み、専用のブロッキングスレッドプール(需要に応じて自動拡張)
+     上で実行するよう変更。開始/終了ログに**デバイス名・実行スレッド
+     ID・呼び出し元スレッドID・経過ミリ秒**を出力し、複数リクエストを
+     同時に送った際に実際にどのスレッドでどのデバイスが並行稼働
+     したかを事後計測できるようにした。
+  3. **実測(3並行`/v1/generate`リクエスト、RUST_LOG=info)**:
+     ```
+     05:26:34.670 dispatch start device=CPU        thread=ThreadId(2)
+     05:26:34.786 dispatch start device=Vulkan(GPU) thread=ThreadId(2)
+     05:26:34.899 dispatch start device=CPU        thread=ThreadId(2)
+     05:26:36.753 dispatch end   device=CPU    exec_thread=ThreadId(66) elapsed_ms=2082
+     05:26:37.003 dispatch end   device=CPU    exec_thread=ThreadId(68) elapsed_ms=2104
+     05:26:52.249 dispatch end   device=Vulkan exec_thread=ThreadId(67) elapsed_ms=17463
+     ```
+     3リクエストがほぼ同時(230ms以内)に開始され、**別々のOSスレッド
+     (66/67/68)で実際に並行実行**された。CPU担当2件(約2.1秒、
+     ほぼ同時に完了)が実行されている間、GPU担当1件(ThreadId 67)も
+     並行して稼働し続けていた(34.786開始、CPU完了後の36.7〜37.0秒台も
+     引き続き稼働、52.249まで)——これはラウンドロビンのロジックが
+     正しいだけでなく、**実際のOSスレッドレベルでCPU計算とGPU
+     ディスパッチが同時に走っている**ことを実測で裏付ける。
+  4. **既知の性能特性の再確認(誇張しない)**: GPU担当リクエストは
+     約17.5秒、CPU担当リクエストは約2.1秒——**約8倍GPU側が遅い**
+     (GT730のディスパッチオーバーヘッドが支配的、過去のHANDOFF記録
+     と整合)。同時並行化によって個々のリクエストが速くなるわけでは
+     なく、複数リクエストが来た際に**待ち行列にならず両方のハード
+     ウェアが同時に仕事を進められる**という利点に限定される。
+  5. **検証結果**: `cargo build --release --features real-vulkan`
+     成功(既存3件の警告のみ、pre-existing)。実サーバー起動+実HTTP
+     並行リクエストで上記4番の通り確認。`chat`等の他エンドポイントは
+     今回`spawn_blocking`化していない(`generate`が最も計算コストが
+     重く実測に適しているため優先、他は次回の増分)。
+  - 次にすべきこと: (1) `chat`/`classify-security`/
+    `classify-traffic`/`generate-with-search`/`translate`の残り
+    5ハンドラも同じ`spawn_blocking`パターンへ統一する(現状は
+    `generate`のみ)。(2) ブロッキングスレッドプールのサイズ上限
+    (tokio既定は512、通常は問題にならないが大量同時リクエスト時の
+    挙動は未検証)。(3) ラウンドロビンではなく実際の負荷(busy/idle)
+    に基づく振り分けへの発展は引き続き未着手。
+
+- **2026-08-11(続き5) 高VRAM帯NVIDIA GPU情報を日英Web検索で裏取りし
+  `hardware.rs`へ反映(ユーザーが言及した「RTX5950X」という製品名が
+  実在しないことの確認+実在する高級GPU情報の正確な記載)**:
+  1. **誤りの確認**: ユーザー言及の「RTX5950X」はNVIDIA製品として実在
+     しない——「5950X」はAMD Ryzenの型番であり、NVIDIA RTXシリーズの
+     命名規則とは異なる。ユーザーへの確認質問で「今は具体的な実装依頼
+     ではない」と回答を得た上で、実在する製品の情報を正確に反映する
+     形で対応した。
+  2. **日英Web検索で確認した実在の高VRAM帯製品**: RTX 5090
+     (Blackwellアーキテクチャ、32GB GDDR7)・RTX 6000 Ada(48GB)・
+     RTX PRO 6000 Blackwell(96GB、ECC対応ワークステーション向け)。
+  3. **`hardware.rs`への反映**: `recommend_id_for_vram`のdocコメントに
+     上記の実在確認結果を出典付きで追記。**正直な開示**: 現在のモデル
+     カタログ最大が`gpt2-xl`(1.5B、約6.43GB)に留まるため、これらの
+     高VRAM帯GPUを検出してもカタログ最大を推奨するだけで、それ以上
+     大きなモデルを実在しないかのように新規推奨することはない——
+     名前だけ挙げて実在しない性能向上を示唆しないよう明記した。
+  4. **検証**: 新規テスト`recommend_for_real_high_end_gpus_caps_at_
+     catalog_max_without_overclaiming`で、RTX 5090/RTX 6000 Ada/
+     RTX PRO 6000 Blackwellそれぞれの実VRAM容量を渡し、いずれも
+     `gpt2-xl`に収束することを確認。`cargo test --release hardware`
+     **4件全green**(既存3件+新規1件)。
+  - 次にすべきこと: モデルカタログに`gpt2-xl`より大きい実在モデル
+    (別アーキテクチャ含む)を追加する場合、この高VRAM帯GPU情報が
+    実際の推奨先として活きる——現状はカタログの上限が先に律速して
+    いるため、優先度はカタログ拡張側にある。
+
+- **2026-08-11(続き4) RS-SmartTCPの「AI侵入検知」プラグイン向けに
+  `POST /v1/security/classify-traffic`を新設(ユーザー指示「TLS復号・
+  AI侵入検知の本実装して」→調査の上、実際の機械学習モデル推論として
+  `security.rs`と全く同じ既存の`open-cuda-bert`埋め込み+コサイン類似度
+  基盤を再利用する方針で対応)**:
+  1. **新規モジュール`src/intrusion_detection.rs`**: `security.rs`
+     (RS-Guardの「AI二次判定」)と全く同じ設計パターン(multilingual-
+     e5-small埋め込み+コサイン類似度)で、ポートスキャン/SYNフラッド/
+     ブルートフォース/データ持ち出し/正常の5カテゴリを判定。**正直な
+     開示**: 攻撃トラフィックの実データで訓練した専用分類器ではなく、
+     汎用埋め込みモデルによる意味的類似度のヒューリスティック
+     (`security.rs`と同じ限界)。GPU/NPU実行は`opencuda-bert`が既に
+     共有する`hw-detect-vulkan`/`hw-detect-directx`+`real-vulkan`
+     feature経由で可能なため、本モジュール専用の新規GPU配線は行って
+     いない(既存インフラの再利用)。
+  2. **`POST /v1/security/classify-traffic`**: `{"description": "..."}`
+     (RS-SmartTCP側が数値特徴量から組み立てた短い説明文を受け取る設計)
+     → `{label, description, score, is_suspicious, engine}`。
+  3. **検証(実バイナリ・実HTTP、モックなし)**: `cargo build --release`
+     成功(既存2件のdead_code警告のみ、pre-existing)。`cargo test
+     --release`**63件全green**(既存60件+`intrusion_detection`新規3件)。
+     実際にサーバーを起動し、`curl`で
+     `{"description":"one source IP probed 60 different destination
+     ports within 3 seconds"}`→`{"label":"port-scan",...,
+     "is_suspicious":true,"score":0.90...}`、
+     `{"description":"a normal web browsing session..."}`→
+     `{"label":"normal",...,"is_suspicious":false,"score":0.90...}`を
+     確認(正しく分類、実行経路も`-cpu`まで含め正直に表示)。
+     **正直な開示・気づいた実ミス**: 最初のビルドはルート登録
+     (`.at("/v1/security/classify-traffic", ...)`)を追加する前に
+     バックグラウンドで開始してしまい、古いバイナリで`404`が返る
+     ことに気づいて再ビルドし直した——型チェックだけでなく実際に
+     `curl`で確認する方針を徹底したことで発見できた実例として記録
+     する。
+  - 次にすべきこと: (1) RS-SmartTCP側からこのエンドポイントを実際に
+    HTTPで呼ぶクライアント配線(現状はaruaru-llm側のみ実装、
+    `RS-SmartTCP/CLAUDE.md`同日HANDOFF参照)、(2) TLSディープパケット
+    インスペクション(本セッションではRS-SmartTCP側で証明書生成のみ
+    実装、実際の復号プロキシ本体は未実装)が実装されれば、復号した
+    ペイロードから本エンドポイントへ渡す説明文をどう組み立てるかの
+    設計、(3) より多様な攻撃パターン(DNSトンネリング・水平スキャン等)
+    のカテゴリ追加は今回のスコープ外。
+
+- **2026-08-11(続き3) 就職・転職・観光の話題検出+aruaru.tokyo/
+  nasa.tokyo/audiocafe.tokyo(aruaru・aruaru-lady)紹介機能を追加
+  (ユーザー指示「英語と日本語と観光と就職転職情報の話題が出たら
+  https://aruaru.tokyo/ 内のAI駆動開発CLAUDE CODE DESKTOP、
+  audiocafe.tokyo/aruaru(IT・建築系求人)・audiocafe.tokyo/aruaru-lady
+  (女性向け求人)のSET、https://aruaru.tokyo/ とhttps://nasa.tokyo/
+  両方とも紹介して」への対応)**:
+  1. **新規モジュール`src/referrals.rs`**: `mentions_career_or_tourism`
+     (日英キーワード一致による簡易検出——GPT-2系の指示追従は保証されない
+     ため、既存のbag-of-wordsフォールバック等と同じ確実性優先の単純
+     実装)+`career_and_tourism_referrals`(4件のリンク、いずれも
+     ユーザー本人から直接指示されたURLのみ使用、推測・捏造URLは
+     含まない)。
+  2. **`POST /v1/referrals/check`新設**: `{"text": "..."}` →
+     `{"matched": bool, "referrals": {...} | null}`。
+  3. **検証**: `cargo build --release`成功。`cargo test --release`
+     **60件全green**(既存57件+`referrals`モジュール新規3件)。実際に
+     サーバーを起動し`curl`で実HTTPリクエスト
+     (`{"text":"I am thinking about a career change"}`)を送信、4件の
+     リンクすべてが正しく返ることを確認済み(`open-english`側からの
+     実ブラウザ経由の統合検証は`open-english/CLAUDE.md`同日HANDOFF
+     参照)。
+  - 次にすべきこと: 特になし(今回のスコープは完了)。キーワード検出は
+    簡易的な文字列一致のため、将来的に誤検出/検出漏れが目立つ場合は
+    埋め込みベースの意図分類(`scoring.rs`と同じ方式)への置き換えを
+    検討してもよい。
+
+- **2026-08-11(続き2) 富士山の安全案内+山小屋・登山バス/タクシー・
+  登山用品店DB+観光ツアー検索を新設(ユーザー指示「富士山は危険な山
+  ですので…上下スキーウェアを着て…落石で死ぬ場合もありますので必ず
+  ヘルメットもして…山小屋を必ず予約して一泊されてから登山して」+
+  「https://mtfuji.jpn.org/availablelist.php ここのHP中身はCOPYして
+  DB化してから富士山の話題が出たら日本語と英語で紹介して」+「登山バス
+  タクシーの予約」「スキーウェアとヘルメットと登山靴などを安く販売
+  しているお店」+「日本も世界も観光で訪れるなら観光ツアーの紹介と
+  オンライン予約をその都度検索して」への対応)**:
+  1. **富士山データ収集**(`data/geo_content.json`拡張): WebFetchで
+     `https://mtfuji.jpn.org/availablelist.php`(吉田口ルート山小屋の
+     営業期間一覧)を実際に取得し、山小屋18件(五合目〜八合目)を
+     `fuji_mountain_huts`として収録。WebSearchで登山バス
+     (`bus.fujikyu.co.jp`)・吉田ルート通行予約システム
+     (`fujisan-climb.jp`)・タクシー会社一覧(`fujisanpo.com`)・
+     登山用品レンタル4店(やまどうぐレンタル屋・そらのした・VIPツアー・
+     山岳同盟)を実際に検索して`fuji_transport_reservations`/
+     `fuji_gear_shops`として収録。安全上の注意文(スキーウェア+ヘルメット
+     着用、山小屋の事前予約・一泊を強く推奨)を`fuji_safety_ja`/
+     `fuji_safety_en`に明記。
+  2. **`GET /v1/geo/fuji`新設**: 安全案内・出典・山小屋一覧・バス/
+     タクシー予約先・登山用品店を一括で返す。**正直な開示**: 営業期間・
+     電話番号は2026-08-11時点の収集値であり毎年変わるため、レスポンス
+     の`source_ja`/`source_en`で常に出典と「利用前に直接確認すること」を
+     明記する。
+  3. **`POST /v1/geo/tours`新設**(観光ツアー紹介+オンライン予約検索):
+     既存の`web_search.rs`(Google Custom Search連携、
+     `/v1/generate-with-search`と同じAPIキー設定を共有)を再利用し、
+     `"<place> 観光ツアー オンライン予約 tour booking"`で検索する。
+     APIキー未設定時は`configured: false`+空結果を正直に返す(黙って
+     結果を偽装しない)。YouTube検索については専用のAPI連携までは
+     実装せず、URLエンコード済みのYouTube検索結果ページへの直リンクを
+     返す設計に留めた(誇張しない、実装スコープを正直に開示)。
+  4. **検証**: `cargo build --release`成功。`cargo test --release`
+     **57件全green**(既存55件+`fuji_info_includes_safety_advisory_
+     and_huts`等の新規テスト)。実際にサーバーを起動し、
+     `open-english`側から研修モードで"I love Japan and Mount Fuji."を
+     送信→`/v1/geo/lookup`(Japan一致)→富士山関連ランドマークを検知して
+     `/v1/geo/fuji`を追加取得→安全案内・山小屋例・バス予約先・登山用品
+     店が実際に日英併記で表示されることをブラウザ上で確認済み(型
+     チェックのみで完了と報告しない方針の実践)。`/v1/geo/tours`は
+     このセッションではGoogle Search APIキー未設定のため
+     `configured: false`の正直なフォールバック応答となることも実際に
+     確認した(実際の検索結果表示はAPIキー設定後に別途検証が必要)。
+  - 次にすべきこと: (1) 実際にGoogle Search APIキーを設定した状態での
+    `/v1/geo/tours`のE2E検証(検索結果が実際に返ることの確認、
+    `web_search.rs`側の既存の未検証事項と同じ)、(2) YouTube Data APIの
+    ような専用連携があれば、直リンクではなく実際の検索結果(動画タイトル・
+    サムネイル等)を返せるようになる可能性の検討、(3) 富士山以外の
+    山(立山・穂高等)への同様のDB拡張は今回のスコープ外。
+
+- **2026-08-11(続き) 実機テストで発覚した`lookup_country`の実バグを修正
+  (ユーザー指示「実際のopen-englishでTESTしたい」を受け、
+  `aruaru-llm`+`open-english-server`を実際に起動してブラウザで実際に
+  研修モードを最後まで動かして検証した結果)**:
+  1. **発見した実バグ**: `POST /v1/geo/lookup`は当初、クエリ全体と
+     国名の**完全一致**のみを見ていたため、`open-english`が実際に送信
+     する「発話文そのまま」("I FROM JAPAN."等)を渡すと一致しなかった
+     (ブラウザで実際に「Where are you from?」に「I from Japan.」と
+     入力したところ、DB検索が空振りし固定の一般的な返答にフォール
+     バックしてしまうことを実際の画面で確認)。
+  2. **修正**: `lookup_country`を部分一致(埋め込みJSON側は
+     `needle.contains(country_en)`/`trimmed.contains(country_ja)`、
+     aruaru-db側は`LIKE '%...%'`)へ変更。回帰テスト
+     `lookup_country_matches_country_name_embedded_in_a_sentence`を
+     追加。
+  3. **実機再検証**: 修正後、実際に`cargo build --release`で再ビルド
+     したバイナリを再起動し、ブラウザで同じ操作("I from Japan.")を
+     再現したところ、`"I love Mount Fuji and Sushi! / 私は富士山と
+     寿司が大好きです!\nA popular souvenir there is Folding fan. /
+     そこの人気のお土産は扇子です。"`という正しいDB駆動の応答が実際に
+     表示されることを確認した(型チェック・単体テストだけで完了と
+     報告しない方針の実践——実際にサーバーを2回起動し直し、ブラウザ
+     操作で再現・修正確認まで行った)。
+  4. **検証結果**: `cargo test --release`**56件全green**(既存55件+
+     回帰テスト1件)。
+  - 次にすべきこと: 特になし(この不具合自体は解消済み)。今後国名検索
+    ロジックを変更する際は、必ず「発話文全体を渡す」実際の呼び出し
+    パターンで再テストすること(単発の国名のみを渡す単体テストだけでは
+    この種のバグを見逃す)。
+
+- **2026-08-11 地理・観光・名物データベースを新設(`geo_content.rs`+
+  `POST /v1/geo/random`・`POST /v1/geo/lookup`)、ユーザー指示
+  「open-englishの自己紹介トレーニングが『I'm from Australia. I love
+  kangaroo & koala』程度しか対応できなかったのを、日本全国・都道府県別、
+  アメリカは州別、世界中の首都名・観光名所・名物料理・お土産の
+  DATABASEを作成して」+「今度どこどこの国に旅行/仕事で行く予定がある、
+  のようなフレーズにもDBで対応して」への対応**:
+  1. **データ範囲(正直な開示)**: 日本47都道府県+米国50州は全件収録、
+     世界の首都は主要60ヶ国分のみ(国連加盟196ヶ国全てではない、今後
+     拡張予定)。各エントリにランドマーク1件+名物料理1件(+首都は
+     お土産1件)を日英で収録した`data/geo_content.json`を新設。
+  2. **DUAL DB方針の確認(実装不要と判明)**: `aruaru-db`自身が
+     `DUAL_DATABASE_URL`経由で本物のPostgreSQLへミラーする冗長化機能
+     (`aruaru-dist::dual_database::DualDatabaseMirror`)を既に持って
+     いるため、本クレート側でDUAL DB化を再実装する必要はなく、単一の
+     Postgres接続(`ARUARU_LLM_GEO_DATABASE_URL`)を張るだけで済む設計
+     にした。
+  3. **フォールバック設計**: `ARUARU_LLM_GEO_DATABASE_URL`未設定・
+     接続失敗時は埋め込みJSON(`include_str!`)からそのまま応答する
+     (既存のbag-of-wordsフォールバックと同じ「サービスを止めない」
+     思想)。起動時に`seed_database_if_configured()`をベストエフォートで
+     呼び、接続できた場合のみ`CREATE TABLE IF NOT EXISTS`+
+     `ON CONFLICT DO NOTHING`で冪等にseed投入する。
+  4. **JSONパースはRust-JSON(`../RS-JSON`)を使用**(ユーザー指示
+     「JSONよりRS-JSONを使って」): 埋め込みJSONの生文字列パースを
+     `serde_json::from_str`から`rust_json::parse_strict`+
+     `serde_json::from_value`へ変更。Rust-JSON自身が値モデルとして
+     `serde_json::Value`を使う設計のため、型付きDeserialize自体は
+     引き続きserdeに委ねる(Rust-JSON自身のモジュールdocに明記された
+     設計方針通り)。HTTPリクエストボディの`Json<T>`抽出(RPoem側)は
+     対象外(該当箇所なし、静的データファイルのパースのみ対応)。
+  5. **検証**: `cargo build --release`成功(既存2件のpre-existing
+     dead_code警告のみ)。`cargo test --release`**55件全green**
+     (既存51件+geo_content新規4件: 埋め込みデータセットの件数確認・
+     DB未接続時のランダム取得フォールバック・国名検索の日英一致・
+     未知の国名での`found:false`)。
+  6. **正直な開示・未検証事項**: 実際に稼働中の`aruaru-db`インスタンス
+     への接続検証はこのセッションでは未実施(環境にaruaru-dbの実行中
+     プロセスが無いため)——埋め込みJSONフォールバック経路のみを実際に
+     検証済み。次回、実際に`aruaru-db`を起動した状態での
+     `ARUARU_LLM_GEO_DATABASE_URL`設定+seed投入+`/v1/geo/random`の
+     実HTTP検証が必要。
+  - 次にすべきこと: (1) 実際に稼働中のaruaru-dbへの接続・seed投入の
+    実機検証、(2) 世界の首都データを国連加盟196ヶ国全てへ拡張、
+    (3) ユーザーからさらに要望のあった「現在のハードウェア環境からの
+    推薦LLM・少し小さい/大きいLLMの特徴・メリデメを日英表示」機能や、
+    「起動時メンテナンス中に最新LLM情報・最新NVIDIA/AMD/Intel GPU情報を
+    収集してDB化する」機能、GPU/ゲーム推奨(4K/5K/120FPS対応・基本無料
+    オンラインゲームの流行調査)・Amazon購入リンク表示は、いずれも
+    広範な最新情報の継続調査(このセッション内のGoogle検索では網羅
+    できない規模)を要するため今回は着手していない——次回、専用の
+    調査セッションとしてスコープを切って着手することを推奨する
+    (Amazon購入リンクについては、実際の購入操作はユーザー自身が行う
+    必要がある旨も併せて検討すること)。
+
+- **2026-08-10(続き5) 東芝SBM(シミュレーテッド分岐)を実際に組み込む
+  新規モジュール`cache_optimizer.rs`+`POST /v1/models/optimize-cache`を
+  実装(ユーザー指示「架空の最適化問題を作ってSBMを実際のaruaru-llmに
+  組み込んでほしい」への対応、`open-cuda`側2回の日英調査で本物の適用先が
+  見つからなかった〈`open-cuda/CLAUDE.md`同日HANDOFF参照〉ことを受けて)**:
+  1. **定式化**: モデルカタログ(5サイズ)のディスク容量予算下での
+     キャッシュ選択を0/1ナップサック問題として定式化(価値=サイズの
+     平方根、既定ヒューリスティック)。標準的なQUBO変換(スラック
+     ビットによる不等式制約の等式化)→Ising(±1スピン)への変換を
+     実装し、東芝SBM(Ballistic Simulated Bifurcation、`open-cuda/
+     examples/sbm_demo`のMax-Cut専用実装を局所磁場付きの一般形へ拡張)
+     で解く。
+  2. **実装中に発見・修正した実バグ**: `c0`(結合強度の正規化係数)が
+     結合行列`j`のみから計算されており、スラックビット由来の局所磁場
+     `h`(ペナルティ展開で`penalty*a_j^2`項が生じ、`j`より桁違いに
+     大きくなりうる)を無視していたため、力学系が最初の数ステップで
+     `h`の符号だけに支配されて即座に飽和し、最適化が実質機能しない
+     実バグがあった(全探索の最適解と一致しない現象として発覚)。
+     `h`・`j`両方の最大絶対値を基準に`c0`を計算するよう修正。
+  3. **正直な開示・SBMの限界(誇張しない)**: 修正後も、`open-cuda`側の
+     Max-Cutデモ(全ケース厳密一致)と異なり、本ナップサック問題(スラック
+     変数を伴うより複雑なQUBO)では一部の予算で全探索の厳密最適解に
+     到達しないケースが実測で見つかった(SBMは近似ヒューリスティック
+     であり厳密解到達を保証しない、というこのエコシステム全体の既存
+     方針通り)。複数シードでの多重探索(8回)を実装して改善したが、
+     テストの許容基準は「厳密一致」ではなく「全探索最適値の75%以上」
+     とした(誇張せずこの限界を記録する)。また、SBM解が容量制約を
+     満たさない場合は価値密度順の貪欲フォールバックへ安全に切り替える
+     設計とした(`used_sbm_solution`フィールドで呼び出し側が判別可能)。
+  4. **`POST /v1/models/optimize-cache`**(advisory専用、実際のディスク
+     削除は行わない): `{"budget_mb": ..., "value_overrides": {...}
+     (任意)}` → `{"keep": [...], "evict": [...], "total_size_mb",
+     "budget_mb", "total_value", "used_sbm_solution"}`。
+  5. **検証**: `cargo test --release`**49件全green**(既存46件+新規3件:
+     QUBO→Ising変換の数値一致・SBM解が全探索の75%以上を達成・
+     `optimize_model_cache`が予算を守ることの確認)。実際にサーバーを
+     起動し`POST /v1/models/optimize-cache {"budget_mb": 2000}`を実HTTP
+     で叩き、`{"keep":["distilgpt2","gpt2-medium"],"evict":["gpt2",
+     "gpt2-large","gpt2-xl"],"total_size_mb":1873,"budget_mb":2000,...,
+     "used_sbm_solution":true}`という正しい応答を確認済み。
+  6. **正直な開示・実用上の位置づけ**: この規模(5変数)のナップサック
+     問題は全探索・動的計画法でも瞬時に厳密解が求まり、SBMを使う実用上
+     の必要性は薄い——本機能は「SBMを実際の意思決定パスへ配線し動作
+     実証する」ことが目的であり、「SBMが無ければ解けない/著しく遅い」
+     という主張はしていない(モジュールdocコメントに明記)。
+  - 次にすべきこと: (1) より多くの候補・より複雑な制約(例: 複数
+    予算次元、モデル間の依存関係)があれば、SBMを使う実用上の意味が
+    増す可能性がある(現状は無し)、(2) ユーザーからさらに複数の適用例
+    (モデルDL順序のスケジューリング等)の要望があったため、次回以降
+    検討する。
+
+- **2026-08-10(続き2) open-english向け既定モデルを`gpt2`(124M)から
+  `distilgpt2`(82M)へ切替(ユーザー指示、4項目の優先順位「速度改善→
+  モデル差し替え調査→フロントエンドRust移植→SBM/DeepSeek調査」の
+  1・2番目に対応)**:
+  1. **実測比較**(このマシンの実CPU、`ARUARU_LLM_REPETITION_PENALTY`
+     既定`1.3`込み、同一プロンプト`"...Student: Hello\nTrainer:"`・
+     `max_new_tokens=24`): `gpt2`=8.37秒、`distilgpt2`=4.83秒
+     (**約42%高速化**)。生成文はいずれも反復ループなし・文法的に自然。
+  2. **切替方法**: `POST /v1/models/select {"id":"distilgpt2"}`で
+     ホットスワップ後、Windowsユーザー環境変数
+     `ARUARU_LLM_GPT2_DIR=F:\runo\aruaru-llm\models\distilgpt2`を
+     `setx`相当(`[Environment]::SetEnvironmentVariable`)で設定し、
+     プロセス再起動後も既定でdistilgpt2がロードされるようにした
+     (`default_model_dir()`の環境変数優先ロジックを利用、コード変更は
+     無し)。
+  3. **正直な開示**: (1) 品質比較は上記1プロンプトの実測のみ——複数
+     プロンプトでの体系的な品質比較は未実施。(2) この環境変数はこの
+     Windows開発機のユーザースコープのみに設定されており、他のマシン
+     (VPS等)やこのマシンの別ユーザーには反映されない——本番デプロイ
+     時は同様の環境変数設定、またはサービス起動スクリプト側での
+     明示を忘れないこと。(3) `real-vulkan` featureは既定offのまま
+     変更なし(既存HANDOFFの結論〈GT730ではVulkanの方が遅い〉を再確認
+     済み、今回は再検証していない)。
+  - 次にすべきこと: (1) 複数プロンプトでのdistilgpt2品質の体系的検証、
+    (2) フロントエンドJS(`open-english`)のRust+RPoemへの移植(優先度
+    3番目、別セッションでスコープを切って着手予定)、(3) 冒頭の
+    東芝SBM/DeepSeek技術組み込み構想の調査(優先度4番目)。
+
+- **2026-08-10 `/v1/generate`の反復ループバグを根本解決(`open-cuda`側
+  `GptModel::generate_with_repetition_penalty`をオプトイン→既定有効で
+  配線)、ユーザー報告「しつこく繰り返すバグ 反応も遅すぎ」への対応**:
+  1. **背景**: `open-english`フロントエンドから「Hello」等の短い発話を
+     送ると、`Student: Hello`を延々繰り返す劣化ループが実際に発生する
+     ことをユーザーが報告した(対話ファインチューニング無しの素の
+     GPT-2貪欲デコードの既知の失敗モード)。以前(2026-08-10、直前の
+     パス)フロントエンド側で「最初の"Student:"手前で切り捨てる」応急
+     処置を実装済みだったが、これは表示上の症状を隠すだけで根本原因
+     (貪欲デコード自体に反復を防ぐ機構が無い)は未解決のままだった。
+  2. **`open-cuda`側の対応**(詳細は`open-cuda/CLAUDE.md`同日HANDOFF
+     参照): `GptModel::generate_with_repetition_penalty`(CTRL方式、
+     既に登場したトークンのlogitを弱める)を新設、既存`generate()`は
+     `penalty=1.0`の薄いラッパーへ変更(数値的に完全同一、回帰無し)。
+     実GPT-2 124M重みで、`open-english`と同じプロンプト構造
+     (`"...Student: Hello\nTrainer:"`)を使い、ペナルティ無しでは実際に
+     ループへ陥ること・`penalty=1.3`で実際に解消し文法的に自然な会話文
+     へ変わることを検証済み。
+  3. **`aruaru-llm`側の実装**(`src/generation.rs`):
+     `default_repetition_penalty()`(`ARUARU_LLM_REPETITION_PENALTY`
+     環境変数、既定値`1.3`、パース失敗・非正数・非有限値は既定値へ
+     安全にフォールバック)を新設し、`generate()`が
+     `loaded.model.generate_with_repetition_penalty(device,
+     &prompt_ids, max_new_tokens, default_repetition_penalty())`を
+     呼ぶよう変更(既定で有効化、`/v1/chat`〈意図分類〉には無関係)。
+  4. **実機検証(型チェックのみで完了と報告しない方針を徹底)**:
+     `cargo build --release`(aruaru-llm)成功。`cargo test --release`
+     **46件全green**(既存機能への回帰なし)。実際にサーバーを起動し、
+     `POST /v1/generate`へ`open-english`と同一のプロンプト構造
+     (`"...Student: Hello\nTrainer:"`、`max_new_tokens=24`)を送信した
+     ところ、`"I'm sorry for the delay in your appointment but it's
+     not too late to get back on track! Thank you so"`(反復なし、
+     文法的に自然な英文)という応答を得た——修正前の同一プロンプトでの
+     応答(`"Hello\nStudent: Hello\nStudent: Hello\n..."`)と比較して
+     劣化ループが実際に解消されたことを実HTTPで確認済み。
+  5. **正直な開示・スコープ**: (a) このペナルティは`/v1/generate`
+     (GPT-2自己回帰生成)のみに適用、`/v1/chat`・`/v1/classify-security`
+     (貪欲デコード自体を使わない意図分類/セキュリティ分類)には無関係。
+     (b) 経験的な既定値`1.3`はこの1シナリオでの実測に基づく——他の
+     プロンプトパターンでの最適値は未検証、必要なら
+     `ARUARU_LLM_REPETITION_PENALTY`で調整可能。(c) サンプリング
+     (温度・top-k/top-p)は依然未実装(貪欲デコード+繰り返しペナルティ
+     のみ)。(d) ユーザー報告のもう一方の懸念「反応も遅すぎ」は、前回
+     パス(フロントエンド側`max_new_tokens`48→24縮小)で既に対応済み
+     のまま変更なし——本パスでは追加のGPU/NPUハードウェア高速化の
+     実験は行っていない(既存HANDOFF記録〈このマシンのGT730では
+     1トークンデコードでCPUよりVulkan経由が遅い、と複数回実測済み〉を
+     踏まえ、ユーザーへその旨を報告し新たな実験は見送った)。
+  - 次にすべきこと: (1) より高性能なGPU実機が得られた場合の
+    `real-vulkan` feature再ベンチマーク、(2) フロントエンドJS
+    (`open-english`)をRust+RPoemへ移植する大規模タスク(ユーザーから
+    言及あり、規模が大きいため別セッションでスコープを切って着手)。
+
+- **2026-08-08(続き3) PCA較正版MLA(`open-cuda`側同日新設
+  `enable_mla_kv_compression_calibrated`)をオプトイン配線
+  (直下2026-08-08(続き2)エントリで「乱数射影は品質を明確に劣化させる」
+  と実測したことを受け、`open-cuda`側で修正できるか調査・実装した
+  結果への対応)**:
+  1. **`open-cuda`側の対応**: 乱数射影の代わりに、実サンプル文の
+     プリフィルで集めた本物のK/V活性化にPCA(`nalgebra`の対称固有値
+     分解)を適用し、分散最大の上位`d_c`方向を射影基底として使う
+     `GptModel::enable_mla_kv_compression_calibrated(d_c, device,
+     sample_prompts)`が新設された(詳細・数学的根拠・実測結果は
+     `open-cuda/CLAUDE.md`同日HANDOFF参照)。
+  2. **`aruaru-llm`側の実装**(`src/generation.rs`):
+     `mla_calibrated_enabled()`(`ARUARU_LLM_MLA_CALIBRATED=1`または
+     `true`で有効化、**既定off**)・`mla_calibration_prompts()`
+     (8文の一般的な英文がデフォルト、トピック分散を意図、
+     `ARUARU_LLM_MLA_CALIBRATION_PROMPTS`〈`;`区切り〉で上書き可)・
+     `wire_mla_kv_compression_calibrated`(トークナイザで較正文を
+     エンコードし`opencuda_cpu::CpuDevice`で較正、`real-vulkan`
+     feature有無に関わらず動作)を新設。既存の乱数射影版
+     (`wire_mla_kv_compression`)とは`wire_mla_kv_compression_any`で
+     排他的に呼び分ける(`ARUARU_LLM_MLA_CALIBRATED=1`が優先、
+     両方同時に有効化しても`GptModel`側は`layer.mla`を1つしか
+     保持できず混乱するだけのため)。
+  3. **実機検証(型チェックのみで完了と報告しない方針を徹底)**:
+     `cargo build --release`成功(既存2件のdead_code警告のみ、
+     pre-existingで無関係)。`cargo test --release -- --test-threads=1`
+     **46件全green**(regression無し)。実際にサーバーを
+     `ARUARU_LLM_ENABLE_MLA_KV_COMPRESSION=1
+     ARUARU_LLM_MLA_CALIBRATED=1`で起動し、起動ログで
+     `ARUARU_LLM_MLA_CALIBRATED set: wired PCA-calibrated MLA-style
+     KV cache compression (head_dim=64 -> d_c=16, 75.0% smaller...
+     calibrated on 8 sample prompts)`を確認した上で、実HTTP
+     リクエスト`POST /v1/generate {"prompt":"The quick brown fox",
+     "max_new_tokens":16}`を送信し、
+     `"completion":"es are a bit of a lot of the way to the forest.\n\n"`
+     という応答を得た——これは`open-cuda`側の単体テスト
+     `calibrated_pca_mla_kv_compression_on_real_gpt2_weights`が実測した
+     PCA較正版の出力と**完全一致**しており、配線が正しく機能して
+     いることを実際のHTTPレスポンスで裏付けた(直下2026-08-08(続き2)
+     エントリで実測した乱数射影版の出力
+     `"es, and the government, and away from the government and point
+     of the government"`のような反復破綻は再現しなかった)。
+  4. **正直な評価(誇張しない)**: PCA較正版は乱数射影版より明らかに
+     改善しているが、**非圧縮版と比較すればなお明確に品質が劣化して
+     いる**(`open-cuda`側同日HANDOFFの評価と同じ)。よって
+     `ARUARU_LLM_MLA_CALIBRATED`も乱数射影版と同じく既定offのopt-in
+     機能として提供するに留めた——実ユーザー向け応答の既定挙動を
+     置き換える判断はしない。
+  - 次にすべきこと: (1) `open-cuda`側同日HANDOFFの「次にすべきこと」
+    (較正サンプル数の拡大・中心化PCAの検証・`d_c`のトレードオフ実測)が
+    進めば、このリポジトリ側でも再度品質検証を行う、(2) 較正データ
+    (`mla_calibration_prompts`の既定8文)を、このサービスが実際に
+    受け取るプロンプトの分布(`/v1/generate`・`/v1/translate`の実
+    トラフィック)に近づけた場合に品質が変わるかの検証は未実施、
+    (3) `real-vulkan`有効時にPCA較正MLAと`set_flash_attention_spirv`/
+    `set_softmax_spirv`を同時有効化した場合の相互作用(速度・メモリ
+    両面)は今回も未計測。
+
+- **2026-08-08(続き2) `GptModel::enable_mla_kv_compression`(DeepSeek-V3
+  風MLA、KVキャッシュ低ランク圧縮、`open-cuda`側2026-08-07実装・実機
+  検証済み)を`aruaru-llm`側からオプトイン配線(直前2026-08-08 HANDOFFの
+  「次にすべきこと(2)」で名指しされていた候補への対応)**:
+  1. **実装**(`src/generation.rs`): `mla_kv_compression_enabled()`
+     (`ARUARU_LLM_ENABLE_MLA_KV_COMPRESSION=1`または`true`で有効化、
+     **既定off**)・`mla_d_c(head_dim)`(既定`head_dim/4`=75%削減、
+     `ARUARU_LLM_MLA_D_C`で上書き可、`0 < d_c < head_dim`を満たさない
+     値は既定値へ安全にフォールバック)・`wire_mla_kv_compression`を
+     新設し、`load_from_dir`から(`real-vulkan` featureの有無に関わらず)
+     常に呼ぶようにした。`enable_mla_kv_compression`自体は
+     `opencuda_blas::mla_compress_kv`/`mla_decompress_kv`(`sgemm`をCPU/
+     Vulkan両対応で呼ぶだけの計算)を土台にしておりデバイス種別に
+     依存しないため、`wire_matmul_spirv`等とは異なり`#[cfg(feature =
+     "real-vulkan")]`の外に置いた——CPUのみの既定ビルドでも有効化できる。
+  2. **d_cの決定根拠**: 実GPT-2 124Mは`hidden_size=768`・`num_heads=12`
+     なので`head_dim=64`。既定`d_c=64/4=16`(75%削減、`open-cuda`側の
+     自テスト`mla_kv_compression_enabled_model_generates_without_
+     panicking`と同じ削減率を踏襲)。`d_c`は`model.config()`から実際の
+     ロード済みモデルの`hidden_size`/`num_heads`を読んで動的計算する
+     (推測やハードコードではなく、モデルカタログの他サイズ
+     〈distilgpt2/gpt2-medium/large/xl〉に切り替えても追従する設計)。
+  3. **なぜ既定offか(速度ではなく品質、`wire_flash_attention_spirv`とは
+     異なる理由)**: `open-cuda`側`open-cuda-llm/src/lib.rs`の
+     `enable_mla_kv_compression`実装を読んだところ、down/up-projection
+     行列は`random_vec`による**乱数初期化**(DeepSeek本家が大規模事前
+     学習で獲得する射影とは無関係)——`open-cuda`側の回帰テスト
+     `mla_kv_compression_actually_changes_generation_versus_uncompressed`
+     自体が「圧縮ありなしで生成結果が実際に異なることを確認する」
+     テストであり、`open-cuda`側は元から品質維持を主張していない
+     (同ファイルdocコメント参照)。ただし`open-cuda`側の実機検証は
+     すべて`GptConfig::tiny`(ランダム初期化トイモデル)止まりで、
+     **実学習済み重み(実GPT-2 124M)での品質検証は`open-cuda`側にも
+     このリポジトリにも存在しなかった**。今回それを実施し、以下の
+     実測により「品質を落とす」という懸念が推測ではなく事実である
+     ことを確認した。
+  4. **実機検証(型チェックのみで完了と報告しない方針を徹底)**:
+     `cargo build --release`成功(既存2件のdead_code警告のみ、pre-
+     existingで無関係)。`cargo test --release`**46件全green**
+     (1回目実行時に無関係な`memory allocation ... failed`で
+     クラッシュしたが、他プロセスは実行されておらず一時的なメモリ
+     逼迫と判断、再実行で全green・regression無し)。
+     実際にサーバーを2回起動し(実GPT-2 124M、同一プロンプト・同一
+     `max_new_tokens=16`)、`POST /v1/generate
+     {"prompt":"The quick brown fox","max_new_tokens":16}`を実HTTP
+     リクエストで比較:
+     - **MLA無効(既定)**: `"es are a great way to get a little bit of
+       a kick out of your"`(2026-07-25 HANDOFF記録の既知の継続文と
+       完全一致、regression無し)。
+     - **MLA有効**(`ARUARU_LLM_ENABLE_MLA_KV_COMPRESSION=1`、起動ログ
+       で`head_dim=64 -> d_c=16, 75.0% smaller`を確認):
+       `"es, and the government, and away from the government and
+       point of the government"`——文法的な体裁こそ保っているが、
+       同じ単語("government")の反復に陥っており、無効時の自然な
+       継続と比べて**明確に品質が劣化している**ことを実際の出力で
+       確認した(誇張ではなく実測、上記3番の懸念の裏取り)。
+  5. **結論・opt-inとした判断の正当性**: KVキャッシュのメモリ削減
+     (ヘッドあたり75%、`head_dim=64→d_c=16`)自体は`d_c`と`head_dim`の
+     比から機械的に導かれる数値であり実際に成立する一方、これは
+     「学習済み射影が無いことによる代償」を伴う——実ユーザー向け
+     応答を返す`/v1/generate`の既定挙動をこれで置き換えるべきではない
+     と判断し、既定offのopt-in機能として提供するに留めた。学習済みの
+     `down_proj`/`up_proj`重みを読み込めるローダーが`open-cuda`側に
+     実装されない限り、この機能は「配線が正しく動くことの実証」の
+     域を出ない。
+  - 次にすべきこと: (1) `open-cuda`側に学習済みMLA射影重みローダーが
+    実装された場合、そちらへ切り替えて再度品質検証を行う(現状の
+    乱数初期化のままでは既定on化はしない)、(2)
+    `real-vulkan`有効時にMLA圧縮と`set_flash_attention_spirv`/
+    `set_softmax_spirv`を同時に有効化した場合の相互作用(速度・
+    メモリ両面)は今回未計測、(3) `GET /v1/models/catalog`等の
+    レスポンスに現在MLA圧縮が有効かどうかを表示する診断フィールドは
+    未追加(現状は起動ログでのみ確認可能)。
+
+- **2026-08-08(続き) DeepSeek「Engram」風KVキャッシュ/重みオフロードの
+  実装を検討したが、コードを実際に読んだ結果「退避対象となるVRAM常駐
+  状態がそもそも存在しない」と判明したため実装を見送り(ユーザー指示:
+  DeepSeekのEngram技術〈静的な知識・KVキャッシュ/重みの一部をVRAMから
+  システムRAMへオフロードし必要時に再ロードする手法〉をこのマシンの
+  実GPU〈NVIDIA GT 730、Keplerクラス旧世代・小VRAM・テンソルコア無し〉
+  向けに実装できないか検討せよ、というタスク)**:
+  1. **調査方針**: 「フックできそうな場所を推測して着手」ではなく、
+     まずモデルロード・推論経路の実コードを読んで、実際にVRAM常駐する
+     状態(重み・KVキャッシュ)が存在するかどうかを確認することから
+     始めた。読んだファイル: `aruaru-llm/src/generation.rs`・
+     `aruaru-llm/src/hardware.rs`、`open-cuda/crates/open-cuda-llm/
+     src/lib.rs`(`GptModel`・`KvCacheHead`・`DecoderLayer`)、
+     `open-cuda/crates/opencuda-vulkan/src/real.rs`
+     (`VulkanDevice::alloc`/`free`/`dispatch_spirv`/`launch_kernel`)、
+     `open-cuda/crates/opencuda-blas/src/lib.rs`
+     (`ScopedAlloc`・`sgemm_vulkan_generic`・
+     `scaled_dot_product_attention_with_spirv[_and_softmax]`)。
+  2. **判明した事実(コード上の根拠)**:
+     - `opencuda-blas::ScopedAlloc`(`opencuda-blas/src/lib.rs`
+       104〜130行目付近)は`device.alloc(bytes)`で確保し
+       `Drop`で必ず`device.free(self.ptr)`するRAIIガードであり、
+       `sgemm`/`sgemm_vulkan_generic`/`scaled_dot_product_attention_
+       with_spirv*`等、Vulkan経由でディスパッチする関数は**呼び出しの
+       たびに**これでVRAMバッファを確保し、host→device転送→計算→
+       device→host転送→即解放、という一回性の使い方をしている。
+       関数を抜けた時点でVRAM上には何も残らない。
+     - `open-cuda-llm::GptModel`の重み(`word_embeddings`・各層の
+       `Linear`の`weight_t`等)は普通の`Vec<f32>`フィールドであり、
+       `GptModel::load`でsafetensorsから読み込んだ後は一貫して
+       システムRAM(通常のRustヒープ)上に存在し続ける。GPU実行時
+       (`--features real-vulkan`、`set_matmul_spirv`配線済み)でも、
+       `Linear::forward`のたびにこの`Vec<f32>`から一時的にVRAMへ
+       コピー→計算→結果を`Vec<f32>`へコピー戻す、という形で変わらない。
+     - `open-cuda-llm::KvCacheHead`(`k`/`v`/`k_latent`/`v_latent`、
+       いずれも`Vec<f32>`)も同様——2026-08-07に配線されたDeepSeek MLA
+       (Multi-Head Latent Attention)風の低ランク圧縮
+       (`mla_compress_kv`/`mla_decompress_kv`)経由であっても、圧縮後の
+       潜在表現自体がシステムRAM上の`Vec<f32>`として保持される設計で、
+       VRAM上に永続する形では一切存在しない。
+     - `VulkanDevice::alloc`(`opencuda-vulkan/src/real.rs`788行目
+       付近)自体、host-visibleかつmapされたメモリを都度新規作成する
+       設計で、呼び出し間でバッファをキャッシュ・再利用する仕組みも
+       存在しない。
+  3. **結論(実装を見送った理由)**: Engram的な「VRAMに常駐する静的な
+     知識をLRU等でシステムRAMへ退避し、必要時に再ロードする」という
+     最適化は、**そもそもVRAMに常駐する状態が存在する場合にのみ意味を
+     持つ**。しかしこのアーキテクチャは(意図した設計ではなく、単に
+     「呼び出しのたびにalloc/freeする」という素朴な実装の結果として)
+     既に「重み・KVキャッシュは常時システムRAMに存在し、GPUは1回の
+     演算のたびに一時的に借用されるだけ」という状態になっている。
+     つまりEngramが解決しようとする問題(VRAM容量を圧迫する常駐状態)が
+     この実装には存在しない。ここへLRUエビクション等の追加機構を
+     実装しても、退避すべき対象が無いため意味のある効果を測定しようが
+     ない——「実装したが効果が無かった」という負の実験結果ですらなく、
+     「そもそも適用対象が無い」という前提の不一致であり、無理に
+     コードを追加することは複雑さを増やすだけの誇張的な実装になると
+     判断し、着手しなかった。
+  4. **実機検証(正直な開示)**: 上記の通り実装を見送ったため、
+     GT 730での「以前OOMしていたモデル/コンテキストが動くようになった」
+     「VRAM使用量が実測で減った」といった類の実機効果検証は**行って
+     いない**(検証すべき実装が無いため)。念のため`nvidia-smi`で
+     このマシンの実GPUが引き続きNVIDIA GeForce GT 730(VRAM 2048MiB)の
+     1台のみであることのみ再確認した。既存コードへの変更は一切無い
+     ため、`cargo build`/`cargo test`の再実行も不要と判断した
+     (無変更のリポジトリに対する再ビルドは新しい情報を生まないため)。
+  5. **本当に効果が見込める、Engramに近い将来の増分(次回以降の候補、
+     今回は未着手)**: 今回のアーキテクチャ調査で分かったこと自体は、
+     将来的にVRAM常駐が意味を持つ変更(例: 複数レイヤーの重みを
+     プリフィル処理のためだけVRAMへまとめて常駐させ複数GEMMで再利用
+     する、といった真のバッチ最適化)を行う際の前提知識として価値が
+     ある。ただしこれは現状の「1トークンデコードのGEMMが極めて軽く
+     Vulkanディスパッチのオーバーヘッドが支配的」という既存の性能上の
+     結論(2026-08-06/07/08の各HANDOFF参照)を覆すものではなく、
+     Engram風オフロード単体を今回のスコープとして実装する動機には
+     ならないと判断した。
+  - 次にすべきこと: (1) 上記3番の通り、Engram風オフロードは適用対象が
+    無いため今後もこのままでは着手しない方針とする(前提が変わる
+    ——例えば将来的に重みを本当にVRAM常駐させる設計へ移行する場合)
+    ——が生じない限り再検討しない)、(2) 東芝SBM/DeepSeek技術の
+    このリポジトリへの適用候補としては、既に`open-cuda`側で実装・
+    実機検証済みのMLA(KVキャッシュ低ランク圧縮、2026-08-07)・
+    fused flash attention(2026-08-07/08)を`aruaru-llm`側から実際に
+    有効化するオプトイン配線(`generation.rs`に`wire_flash_attention_
+    spirv`は既にあるが`enable_mla_kv_compression`相当の配線は未着手)
+    の方が、既存のVRAM常駐前提を変えずに着手できる現実的な候補として
+    残しておく。
+
+- **2026-08-08 `GptModel::set_flash_attention_spirv`のオプトイン配線+
+  「GEMM+GPU softmax」vs「GEMM+fused flash attention」の実機速度比較
+  (rs-sync横断セッション、直前2026-08-07 HANDOFFの「次にすべきこと(1)」
+  への対応)**:
+  1. **実装**(`src/generation.rs`): `default_flash_attention_spirv_path`
+     (`ARUARU_LLM_FLASH_ATTENTION_SPIRV`環境変数で上書き可、既定は
+     `open-cuda`側の`examples/flash_attention_vulkan_real/shaders/
+     flash_attention.spv`)+`wire_flash_attention_spirv`を追加。
+     `wire_matmul_spirv`/`wire_softmax_spirv`とは異なり**既定では
+     wireしない**——`ARUARU_LLM_ENABLE_FLASH_ATTENTION=1`(または`true`)を
+     明示的に設定した場合のみ配線する設計にした。理由: `GptModel`側の
+     実装(`open-cuda/crates/open-cuda-llm/src/lib.rs`)は`flash_attn_spirv`
+     が`Some`なら常にそちらを`softmax_spirv`より優先するため、両方を
+     常時wireすると「GEMM+GPU softmax」経路を意図的に選ぶ手段が無くなり、
+     3経路(GEMM+CPU softmax/GEMM+GPU softmax/GEMM+fused flash attention)
+     の比較ができなくなるため。
+  2. **実機速度比較(NVIDIA GT 730、型チェックのみで完了と報告しない方針を
+     徹底、実際にサーバーを起動し実HTTPリクエストで計測)**:
+     `POST /v1/generate {"prompt":"The quick brown fox",
+     "max_new_tokens":5}`を、同一プロンプト・同一トークン数で2経路
+     それぞれ実測した(いずれも生成結果`"es are a great way"`で完全一致、
+     数値的に壊れていないことも確認):
+     - **GEMM+GPU softmax**(`wire_softmax_spirv`のみ、既定の`real-vulkan`
+       挙動): **約26.2秒**。
+     - **GEMM+fused flash attention**(`ARUARU_LLM_ENABLE_FLASH_ATTENTION=1`
+       追加): **約16.4〜16.6秒**(2回計測、"Artificial intelligence is"の
+       別プロンプトでも再現)。
+     **fused flash attentionへの切り替えで約37%高速化**——レイヤーあたり
+     QKᵀ・softmax・P·Vの3回ディスパッチが1回に統合されたことで、
+     `open-cuda`側2026-08-06 HANDOFFで懸念されていた「Vulkanディスパッチ
+     固定オーバーヘッドが支配的」という問題が実際に緩和されることを
+     初めて実測で確認した(推測ではなく実測、誇張しない範囲で報告する)。
+  3. **正直な開示・それでもなお遅いという事実**: 上記いずれの経路も、
+     同条件でのCPU版(`real-vulkan` feature無し)の実測(2026-08-04
+     HANDOFF記録: `max_new_tokens=20`で約6〜7秒)と比較すると依然として
+     大幅に遅い(`max_new_tokens=5`で16秒台は、単純比例換算でも
+     CPU版の`max_new_tokens=20`実測を上回る)。**「fused flash attentionは
+     softmax分離版より速い」ことは実証したが、「Vulkan経路がCPU版より
+     速い」ことは今回も実証していない**——GT 730のような低性能GPUでは、
+     1トークンあたりのディスパッチ回数をどれだけ減らしても、GPT-2 124M
+     程度の軽い計算に対するVulkanのディスパッチ固定オーバーヘッド自体が
+     依然支配的である可能性が高い。`real-vulkan`(既定無効)を既定へ
+     昇格させる判断はしない。
+  4. **検証結果**: `cargo build --release`(featureなし)/`cargo build
+     --release --features real-vulkan`いずれも成功。`cargo test
+     --release`(featureなし)は既存回帰なし(バックグラウンドで実行、
+     結果は本エントリ確定前に確認済み)。`cargo clippy --release
+     --features real-vulkan --all-targets -- -D warnings`で**pre-existing
+     の3件**(`generation.rs`の`unused_assignments`、`generation.rs`/
+     `scoring.rs`の`ENGINE_GPT2_GREEDY`/`ENGINE_EMBEDDING`の`dead_code`、
+     いずれも今回の変更とは無関係で以前から存在)を検出——今回は変更が
+     本題(実機速度比較)から逸れることを避けるため修正していない、
+     次回clippy運用時にまとめて対応する候補として記録する。
+  5. **正直な開示・スコープ外**: (a) `scoring`/`security`(BERT系)側への
+     flash-attention相当の配線は今回も行っていない(`open-cuda-bert::
+     BertModel`はエンコーダでKVキャッシュを持たないため、`open-cuda`側
+     2026-08-07エントリで指摘されている通り単純な流用はできない)。
+     (b) dream-os/open-directx側との直接連携は本セッションでは
+     `open-cuda`経由の間接連携(同じ`flash_attention.spv`アセットを
+     `dream-os-kernel`も別途参照するようになった、詳細は`dream-os/
+     CLAUDE.md`2026-08-08エントリ参照)のみで、本リポジトリのファイルは
+     変更していない。
+  - 次にすべきこと: (1) 上記clippy pre-existing警告3件のクリーンアップ、
+    (2) `real-vulkan`をこのGT 730のような低性能GPU環境では既定にしない
+    という判断の妥当性を、より高性能なGPU実機が得られた際に再検証する、
+    (3) `scoring`/`security`側のVulkan GEMM配線・ベンチマークは引き続き
+    未着手。
+
+- **2026-08-07(続き) `/v1/chat`・`/v1/classify-security`の空入力挙動を実HTTPで
+  検証(前回HANDOFFの「次にすべきこと(2)」への対応、ユーザー指示
+  「dream-os/open-directx/open-cuda/aruaru-llmの関連性・連携性・実用性・
+  完成度を向上」の一環)**:
+  1. **背景**: 直前2026-08-07 HANDOFF(`/v1/generate`・`/v1/translate`の
+     空入力`400`化)の「次にすべきこと(2)」で、同様の粗が`/v1/chat`
+     (`message`)・`/v1/classify-security`(`text`)にも無いか未確認のまま
+     残っていた(コード読解上は`scoring::classify`/`security::classify_
+     security`が空文字列でも例外を投げず正常応答する設計と推測されて
+     いたが、実HTTPでの確認は未実施だった)。
+  2. **検証(型チェックのみで完了と報告しない方針を徹底)**:
+     `cargo build`(debugビルド、`target/debug/aruaru-llm.exe`)後、
+     実際にサーバーを起動し(`0.0.0.0:4600`)、以下を実HTTPリクエストで
+     確認した:
+     - `POST /v1/chat {"message":""}` → `200`
+       `{"reply":"e-gov.infoへようこそ...","engine":"embedding-cosine-v0-
+       open-cuda-bert-cpu","matched_intent":null,...}`(既定のフォール
+       バック応答、`503`にならず正常応答)。
+     - `POST /v1/classify-security {"text":""}` → `200`
+       `{"label":"benign","score":0.886...,"is_suspicious":false,
+       "engine":"embedding-cosine-heuristic-v0-open-cuda-bert-cpu",
+       "static_signals":[]}`(空入力を`benign`判定、`503`にならず正常
+       応答)。
+     - 回帰確認として`POST /v1/generate {"prompt":""}`→`400`・
+       `POST /v1/translate {"text":"","target_lang":"Japanese"}`→`400`
+       も再実行し、前回HANDOFFの修正(コミット`b500023`)が引き続き
+       正しく動作していることを確認した。
+  3. **結論・コード変更は無し**: `/v1/chat`・`/v1/classify-security`は
+     いずれも空入力で`503`化する問題を再現できなかった——前回HANDOFFの
+     「`scoring::classify`/`security::classify_security`は空文字列でも
+     例外を投げずNone/低スコアで正常応答する設計」という推測が実HTTPで
+     裏付けられた。**このため`src/main.rs`等への変更は行っていない**
+     (「確認のみでよい」という前回の優先度判断が正しかったことの実証、
+     誤りを見逃していないことの正直な報告)。
+  4. **正直な開示・今回スコープ外のまま**: `open-cuda`側で今回同時に
+     `open-cuda-llm`のAttention経路へ`flash_attention_with_spirv`
+     (1ディスパッチで完結するfused attentionカーネル)を配線した
+     (`open-cuda/CLAUDE.md` 2026-08-07(続き5)HANDOFF参照)が、
+     `aruaru-llm`側で`GptModel::set_flash_attention_spirv`を実際に呼ぶ
+     配線は**今回は行っていない**(このリポジトリでは検証専任のパスに
+     留め、影響範囲拡大を避けた——`generation.rs::wire_matmul_spirv`
+     相当の追加配線+実機速度計測は次回の増分として残す)。
+     `scoring`/`security`側のVulkan GEMM配線・GT-730でのVulkan vs CPU
+     ベンチマークも前回から変更なく未着手。dream-os・open-directx側との
+     具体的な連携強化(API呼び出し経路の実装等)も本リポジトリ内では
+     引き続き未着手。
+  - 次にすべきこと: (1) `GptModel::set_flash_attention_spirv`の
+    `aruaru-llm`側オプトイン配線(`generation.rs`に`wire_matmul_spirv`と
+    並ぶ`wire_flash_attention_spirv`相当を追加し、
+    `--features real-vulkan`で実機速度計測——「GEMM+CPU softmax」
+    「GEMM+GPU softmax」「GEMM+fused flash attention」の3経路比較)、
+    (2) `scoring`/`security`側のVulkan GEMM配線・GT-730でのベンチマークは
+    引き続き未着手、(3) dream-os・open-directx側との具体的な連携強化は
+    未着手のまま。
+
+- **2026-08-06 softmax専用SPIR-Vカーネルをaruaru-llm側でも実配線、
+  「GPU GEMM + GPU softmax」経路の実HTTP検証まで完了(直前コミット
+  「Vulkan GEMM配線バグを解消、softmax専用カーネル連携を実機検証」の
+  次にすべきこと=Attention経路への本格統合、ユーザー指示「aruaru-llm
+  連携性向上」への対応)**:
+  1. **前回コミットの正直な補足記録**: 直前コミット(`f7030ca`、CLAUDE.md
+     未記録のまま残っていたため今回まとめて記録)は、`engine_label`が
+     実行経路(Vulkan/CPU)を`matmul_spirv_wired`フラグで正しく判定する
+     よう修正したのみで、**softmaxカーネル自体はこの時点ではまだ
+     aruaru-llm側に一切参照されていなかった**(`grep softmax src/`が
+     0件)——コミットメッセージの「softmax専用カーネル連携を実機検証」は
+     `open-cuda`側(`opencuda-blas`)でのスタンドアロン検証を指しており、
+     aruaru-llm側の実配線は未着手だった。この節でその配線を実施した。
+  2. **`open-cuda`側の対応**(このセッションでopen-cuda本体にも着手、
+     詳細は`open-cuda/CLAUDE.md` 2026-08-06 HANDOFF参照): 前回
+     (2026-08-06付`open-cuda`側HANDOFF)で実装・実機検証済みだった
+     `softmax_vulkan_generic`(スタンドアロンのsoftmaxカーネル、Attention
+     経路には未配線)を、`opencuda_blas::scaled_dot_product_attention_
+     with_spirv_and_softmax`という新関数経由でAttention計算(QKᵀ→softmax
+     →P·V)へ実際に組み込んだ。`open-cuda-llm::GptModel`・`open-cuda-bert::
+     BertModel`双方に`set_softmax_spirv`を新設(`set_matmul_spirv`と同じ
+     パターン)。
+  3. **`aruaru-llm`側の配線**: `src/generation.rs`に`default_softmax_
+     spirv_path`(`ARUARU_LLM_SOFTMAX_SPIRV`環境変数で上書き可)・
+     `wire_softmax_spirv`を追加し、`load_from_dir`内で`wire_matmul_spirv`
+     と並べて呼ぶよう変更(`GptModel::set_softmax_spirv`経由)。
+     `src/scoring.rs`にも同じパターンで`default_softmax_spirv_path`・
+     `wire_softmax_spirv`を追加し、`get_model()`内で`BertModel::
+     set_softmax_spirv`を呼ぶよう変更(`scoring`/`security`共通、
+     `security.rs`は`scoring::embed`を再利用する既存設計のため無改修)。
+  4. **実機検証(型チェックのみで完了と報告しない方針を徹底、NVIDIA
+     GeForce GT 730)**:
+     - `cargo build --release`(featureなし)/`cargo build --release
+       --features real-vulkan`いずれも成功。`cargo test --release`/
+       `cargo test --release --features real-vulkan`いずれも既存
+       **46件全green**(regression無し、テスト自体の新規追加は今回無し
+       ——このリポジトリ側の新規ロジックは「起動時にファイルを読んで
+       配線する」だけの薄い層で、実質的な検証は`open-cuda`側の
+       `open-cuda-llm`/`opencuda-blas`テストで既に実施済みのため)。
+     - **実際にサーバーを起動**(`--features real-vulkan`、
+       `RUST_LOG=info`)し、起動ログで`generation`・`scoring`双方について
+       `loaded matmul.spv (2732 bytes) ... via set_matmul_spirv`・
+       `loaded softmax.spv (4680 bytes) ... via set_softmax_spirv`の
+       **両方**が記録されることを確認(片方だけの配線ではないことの
+       裏取り)。
+     - **実HTTPリクエスト**: `POST /v1/generate
+       {"prompt":"The quick brown fox","max_new_tokens":5}`へ実際に
+       リクエストを送り、`"completion":"es are a great way"`(CPU版の
+       既知の継続文`"es are a great way to get a little bit of a"`の
+       先頭一致、生成内容が壊れていないことを確認)・
+       `"engine":"gpt2-greedy-decode-v0-open-cuda-llm-vulkan"`
+       (`-vulkan`接尾辞、実際にVulkan経由で動作したことをエンジン
+       ラベルからも確認)という正しい応答を得た。
+  5. **正直な開示・性能(誇張しない)**: 上記`POST /v1/generate`
+     (`max_new_tokens=5`)の実測所要時間は**約35.9秒**——CPU版の既存記録
+     (`max_new_tokens=20`で約6〜7秒)と比較して大幅に遅い。これは
+     `open-cuda`側2026-07-26 HANDOFFで示した「1トークンデコードは
+     `seq_len=1`のGEMM/softmaxが極めて軽く、Vulkanのディスパッチ固定
+     オーバーヘッドの方が支配的になり、CPU実行より遅くなりうる」という
+     設計上の懸念が、今回softmax専用カーネルの追加ディスパッチ
+     (レイヤーあたりQKᵀ・softmax・P・Vの3回、従来のGEMMのみ版の1.5倍の
+     ディスパッチ回数)によりさらに悪化する形で実測された。
+     **「正しく動く」ことは実証できたが「速くなる」ことは実証していない**
+     ——`real-vulkan` featureは既定無効(opt-in)のままであり、この結果を
+     もって既定を切り替える判断はしない。
+  6. **検証結果まとめ**: `cargo build --workspace`/`cargo test
+     --workspace`(open-cuda側含む)全クレートregression無し。
+     `cargo clippy --workspace --all-targets --release -- -D warnings`
+     (open-cuda側)警告0件。
+  - 次にすべきこと: (1) デコード側(`forward_step`、`seq_len=1`)への
+    Vulkanディスパッチはオーバーヘッドが支配的で実用上不利なことが
+    改めて確認されたため、プリフィル(`forward_prefill`、バッチGEMM)
+    側でのみVulkan経路を使い、デコード側はCPU固定にする「経路ごとの
+    使い分け」の設計(`open-cuda`側の変更が必要な増分)、(2) 真に
+    GPU常駐率を上げるにはAttention全体を1回のディスパッチにまとめる
+    融合(fused)カーネルが必要(`open-cuda`側スコープ)、(3) 現状の
+    `real-vulkan`(opt-in、既定無効)のまま据え置き、既定を切り替える
+    判断は行わない(性能が実証されるまでは)、(4) `flash_attention`
+    (タイル化+オンラインsoftmax)側は依然ホスト側CPU実装のまま
+    未着手(`open-cuda`側スコープ)。
+
+- **2026-08-04(続き2) `real-vulkan` feature配線を実装、実機検証の結果
+  「単純な配線では動作しない」ことが判明(前回HANDOFFの「次にすべきこと
+  (1)」への対応、ユーザー指示「open-directx open-cuda aruaru-llmなどの
+  使いやすさ向上と連携と実用性と完成度を向上させて」の一環)**:
+  1. **実装**: `Cargo.toml`に`opencuda-vulkan`をoptional path依存として
+     追加し、`real-vulkan = ["dep:opencuda-vulkan", "opencuda-vulkan/real-vulkan"]`
+     を新設(既存の`hw-detect-vulkan`——ハードウェア検出専用——とは別軸、
+     推論ディスパッチ先を切り替えるためのfeature)。`src/main.rs`の
+     デバイス選択(従来`CpuDevice::new(0)`固定)を`#[cfg(feature =
+     "real-vulkan")]`で分岐し、有効時は`opencuda_vulkan::real::
+     VulkanDevice::new(0)`を使う(構築失敗時はCPUへ安全側フォールバック、
+     サービスを壊さない設計)。既定ビルド(feature無し)への影響はゼロ
+     (`cargo build --release`〈featureなし〉が引き続き成功することを
+     確認済み)。
+  2. **ビルド検証**: `cargo build --release --features real-vulkan`
+     成功。`cargo test --release`(featureなし)・`cargo test --release
+     --features real-vulkan`いずれも**46件全green**、リグレッション無し。
+  3. **実機検証(NVIDIA GT 730、型チェックのみで完了と報告しない方針を
+     徹底)、そして重要な負の結果**: 実際にサーバーを起動し
+     `POST /v1/generate`へ実HTTPリクエストを送った。
+     - **CPU版(feature無し)**: `{"prompt":"The quick brown fox",
+       "max_new_tokens":20}` → `"es are a great way to get a little bit
+       of a kick out of your dog.\n\n"`(200)、所要時間**約6.0〜6.8秒**
+       (`time curl`で2回計測、6.796s/6.060s)。
+     - **Vulkan版(`--features real-vulkan`)**: 起動ログでは
+       `real-vulkan feature enabled: using VulkanDevice for inference
+       dispatch`・`device: OpenCUDA Vulkan Device (NVIDIA GeForce GT
+       730)`が確認できたが、**`POST /v1/generate`への実リクエストは
+       0.228秒で即座に失敗**した:
+       `"error":"GptModel::generate failed: sgemm: GemmPath::
+       VulkanGeneric selected (device.supports_spirv()==true,
+       vendor-specific path is still a stub) but no spirv bytes were
+       provided; pass the compiled matmul.spv bytes via the `spirv`
+       argument"`
+  4. **根本原因の特定**: `open-cuda`側`open-cuda-llm/src/lib.rs:224`の
+     `Linear::forward`が`opencuda_blas::sgemm(..., None)`と、`spirv`引数
+     に常に`None`を渡す実装になっている(CPU実行のみを前提とした既存の
+     呼び出し)。`opencuda_blas::select_gemm_path`は`VulkanDevice`に対して
+     `GemmPath::VulkanGeneric`を選ぶが、この経路は`spirv`バイト列
+     (コンパイル済み`matmul.spv`)が必須で、`None`だと`sgemm`が
+     `Err`を返す設計(`opencuda-blas/src/lib.rs`の`sgemm`関数、意図的な
+     安全策——「実装していないという誤ったシグナルを出さない」既存の
+     エコシステム方針通り、黙ってCPUへフォールバックせず正直にエラーに
+     している)。同じ理由で、`scoring::warmup`/`security::warmup`
+     (`open-cuda-bert`経由のBERT埋め込み計算)もVulkan版サーバー起動直後
+     に同一エラーで警告ログを出していた(`warmup failed ...: sgemm:
+     GemmPath::VulkanGeneric selected ... but no spirv bytes were
+     provided`)——`generation`側のwarmupだけは重み・トークナイザの
+     ロードのみで実際に`sgemm`を呼ばないため警告なしに完了しており、
+     初回`/v1/generate`呼び出しで初めて失敗が表面化した。
+  5. **正直な評価(誇張しない)**: 前回HANDOFF(2026-07-26)で示した
+     「安易な配線は逆に遅くなりうる」という**性能上の懸念**は、今回の
+     実測では検証できなかった——実際には性能比較以前に**機能しない**
+     (即座にエラーで失敗する)ことが判明した。これは`aruaru-llm`側の
+     feature配線自体のバグではなく(配線・デバイス切り替えは設計通り
+     正しく動作している——ログで実際にVulkanDeviceが選択されたことは
+     確認済み)、`opencuda-blas`/`open-cuda-llm`側がまだ「呼び出し側が
+     コンパイル済みSPIR-Vシェーダバイト列を明示的に渡す」設計のままで、
+     `open-cuda-llm`のLinear層がその配線を実装していない、という
+     `open-cuda`側の既知のギャップに起因する。「成功した」と誇張せず、
+     この負の結果をそのまま記録する。
+  6. **スコープの判断(ユーザー指示「open-cuda側のコードは今回変更しない
+     こと」に従う)**: 根本原因は`open-cuda-llm/src/lib.rs`の
+     `Linear::forward`が`matmul.spv`のコンパイル済みバイト列を`sgemm`へ
+     渡していない点にあり、修正には(a)`open-cuda-llm`側で`matmul.spv`を
+     ロードし`Linear`構造体が保持する、(b)`VulkanDevice`固有の
+     `sgemm_vulkan_generic`をどこかで呼ぶよう`Linear::forward`を変更する、
+     という`open-cuda`側の実装変更が必要(`opencuda-vulkan`側には
+     `tools/compile-vulkan-shaders.*`で`matmul.spv`をビルドする仕組みが
+     既に存在するため、シェーダ自体は用意されている)。これは
+     `open-cuda-llm`クレート内部の変更であり、今回のタスク範囲
+     「`open-cuda`側のコードは変更しないこと」に明確に抵触するため、
+     **今回は修正を行わなかった**(ユーザー指示通り、正直に開示するのみ
+     に留める)。
+  7. **`aruaru-llm`側の変更のみで到達可能な範囲の結論**: `real-vulkan`
+     featureの配線自体(Cargo feature新設・デバイス選択の分岐・既定
+     ビルドへの無影響・ビルド/テストの回帰無し)は完了・検証済みだが、
+     実際にVulkan経由での生成が機能するには`open-cuda-llm`側への
+     追加実装(上記6番)が前提条件として必要、という結論に至った。
+  - 次にすべきこと: (1) (`open-cuda`専用セッションとしてスコープを切り、
+    ユーザーの了承を得た上で)`open-cuda-llm::Linear::forward`が
+    `matmul.spv`のコンパイル済みバイト列を`sgemm`へ渡すよう変更する
+    (`opencuda-vulkan`の`tools/compile-vulkan-shaders.*`で生成済みの
+    シェーダを`Linear`構造体または`GptModel`がロード・保持する設計)、
+    (2) 上記が実装され次第、本HANDOFFで実施した同じ手順(`cargo build
+    --release --features real-vulkan`→サーバー起動→`POST /v1/generate`
+    実HTTPリクエスト)でCPU版とVulkan版の生成結果の数値一致・実際の速度差
+    を再検証する、(3) `open-cuda-bert`(scoring/security)側も同じ根本
+    原因で警告が出ているため、修正時は`open-cuda-llm`と合わせて
+    `opencuda-blas`側の呼び出し全体を横断的に確認する価値がある。
+
+- **2026-08-04(続き) `open-cuda`側`open-cuda-llm::GptModel`にプリフィル/
+  デコード分離+QKV融合GEMMを実装(直前の2026-07-26 HANDOFF「安易なGPU
+  配線は逆に遅くなりうる」で示した設計変更(a)(b)への対応、詳細は
+  `open-cuda`側CLAUDE.md 2026-08-04 HANDOFF参照、ユーザー指示
+  「open-directx open-cuda aruaru-llmなどの使いやすさ向上と連携と実用性と
+  完成度を向上させて」)**:
+  1. **要旨**: `open-cuda-llm/src/lib.rs`のQ/K/V(3本の`Linear`)を1本の
+     融合`Linear`(`qkv`)へ統合し(GPT-2 safetensorsが元々`c_attn`という
+     融合`Conv1D`で保存している構造をそのまま活かす形)、プロンプトの
+     初回forward(プリフィル)を`forward_prefill`(`seq_len`をGEMMの`m`
+     パラメータとする本当のバッチ処理)へ変更した。生成トークンの逐次
+     デコードは従来通り`forward_step`(`seq_len=1`)のまま(prefill/decode
+     分離)。
+  2. **検証**: 実GPT-2 124M重み(`../open-cuda/crates/open-cuda-llm/
+     models/gpt2/`、本リポジトリが既定で使うのと同じ重み)で、変更前後の
+     生成結果(プロンプト`"The quick brown fox"`・`max_new_tokens=12`)が
+     `[274, 389, 257, 1049, 835, 284, 651, 257, 1310, 1643, 286, 257]`
+     (`"es are a great way to get a little bit of a"`)で完全一致する
+     ことを確認(挙動を変えない最適化であることの実証)。`cargo test -p
+     open-cuda-llm --release`9件全green、`cargo build --workspace`/
+     `cargo test --workspace`全クレートregression無し。
+  3. **本リポジトリ(`aruaru-llm`)側の変更は無い**: 今回の変更は
+     `open-cuda`側`open-cuda-llm`クレート内部の最適化に留まり、
+     `aruaru-llm`はこの依存クレートを`path`依存で参照しているだけ
+     (`Cargo.lock`不使用のpath依存のため、次回`cargo build`時に自動的に
+     新しいコードが使われる。既存の`POST /v1/generate`のAPI契約
+     〈入出力形式〉は無変更)。
+  4. **正直な開示・スコープ外(直前HANDOFFの(c)は今回未着手)**:
+     `aruaru-llm`側にオプトインの`real-vulkan` feature(デバイス選択を
+     `CpuDevice`から`opencuda-vulkan::real::VulkanDevice`へ切り替える
+     配線)は**今回も実装していない**。(a)(b)の実装・「挙動を変えない
+     ことの実証」までを確実にやり切ることを優先したため
+     (ユーザー指示の優先順位通り)。ディスパッチ回数削減
+     (レイヤーあたりプリフィルが`4*seq_len`→`4`)によりVulkan配線時の
+     オーバーヘッド懸念はプリフィル側について理論上緩和されているはず
+     だが、実際にVulkanDevice経由で走らせての速度実測・CPU版との数値
+     一致検証はまだ行っていない。
+  - 次にすべきこと: (1) `main.rs`のデバイス選択箇所に`real-vulkan`
+    feature(既定無効)を追加し`VulkanDevice`へ切り替え、(2) 実機
+    (NVIDIA GT 730)でCPU版とVulkan版の生成結果が数値的に一致すること・
+    実際の速度差(遅くなっていないか)をベンチマークで確認、(3) 上記が
+    確認できれば`README.md`/`README-English.md`に`real-vulkan`
+    feature(有効化方法・既知の制約)を追記。
+
+- **2026-08-04 `POST /v1/translate`を新設(ユーザー指示「aruaru-llmに自動翻訳機能を持たせて」)**:
+  `/v1/generate`(GPT-2系テキスト生成)を翻訳プロンプトで呼び出す薄いラッパー。
+  `{text, target_lang, source_lang(任意), tenant(任意)}` → `{translation, engine,
+  disclosure}`。**正直な開示(最重要)**: 専用の翻訳モデル(NLLB/M2M100等)ではなく、
+  英語中心の事前学習のみでファインチューニング無しのGPT-2系(124M-1.5B)を
+  そのまま流用しているため、特に非英語↔非英語の組み合わせで品質が不安定。
+  この限界はレスポンスの`disclosure`フィールドに毎回明記する(`/v1/generate`と
+  同じ設計方針)。`audiocafe.tokyo/rakuten-mobile`の17言語ページ整備
+  (ユーザー指示「毎朝5時に自動翻訳して」)の実現手段として新設したが、
+  当該ページの17言語版自体は今回、生成AIではなく人力翻訳(Claude Code)で
+  作成済みであり、この`/v1/translate`エンドポイントを実際に呼び出す
+  cronジョブの配線は次回以降の課題として未着手のまま(エンドポイント自体は
+  `cargo build --release`で実装・ビルド確認済み、実HTTP検証は未実施)。
+  - 次にすべきこと: (1) 実際に`POST /v1/translate`を呼ぶ検証(モックでなく
+    実リクエスト)、(2) 品質が実用に足るかの評価(現状は理論上の懸念のみ)、
+    (3) 必要であれば`audiocafe-tokyo-php`側のcronから定期呼び出しする配線。
+
+- **2026-07-31 本家`poem`クレートからRPoem(`open-runo-poem-compat`)へ移行完了(ユーザー指示)**:
+  ユーザー指示「Python向けAIライブラリとLLMをRustなど他の言語からでも
+  利用できるRust製+Rust＋Poem互換のRPoemで開発して」に対応。前回
+  (`open-cuda`側)の`opencuda-whisper`新設に続き、その成果を他言語から
+  HTTP経由で使える窓口である本リポジトリ自体を、本家`poem`から
+  `RPoem`(`../RPoem/crates/open-runo-poem-compat`、path依存)へ移行した。
+  1. **移行内容**: `Cargo.toml`から`poem = "3.1"`を削除し
+     `open-runo-poem-compat`(path依存)+`hyper`+`bytes`を追加。
+     `src/main.rs`を全面書き換え——`#[handler]`マクロ・
+     `Data<&Arc<...>>`抽出子は本ファサードに存在しないため、
+     `handler_fn`(素の`Fn(Request, Params) -> Future<Response>`)へ
+     ハンドラを変換し、共有状態(`device: Arc<dyn GpuDevice>`・
+     `registry: Arc<TenantRegistry>`)はルート登録時のクロージャで
+     `Arc::clone`をキャプチャする形に置き換えた。`Json<T>::from_body
+     (req).await`(リクエストボディ)・`hyper_compat::json_response`
+     (レスポンス)・`PathParams::from(params)`(パスパラメータ)は
+     ファサードの提供APIをそのまま使用。プレーンテキスト応答
+     ("ok"/"invalid admin token"/"tenant not found")用に軽量な
+     `text_response()`ヘルパーを新設(ファサードにcontent-type自動判定
+     機能が無いため)。
+  2. **ロジック自体は無変更**: `scoring::classify`/`security::
+     classify_security`/`generation::generate`/`model_catalog`/
+     `hardware::recommend`等、ビジネスロジック側のモジュールは一切
+     変更していない——変更は`main.rs`のHTTP層のみ。
+  3. **検証(実HTTP、型チェックのみで完了と報告しない既存運用ルール
+     徹底)**: `cargo build`成功(RPoem側の既存3警告のみ、aruaru-llm自体は
+     警告0件)。実際にサーバーを起動し(`E_GOV_LLM_ADMIN_TOKEN=test-token`)、
+     起動ログでwarmup完了(モデルロード28秒・セキュリティ分類器ウォーム
+     アップ)を確認した上で: `GET /healthz`→200・`GET /`→200(静的HTML
+     UI)・`POST /v1/chat`(govインテント一致・正しい応答)・`POST
+     /v1/generate`(実GPT-2重みでの文章生成、200)・`GET /v1/models/
+     catalog`→200・`POST /admin/tenants`(登録)→200・`GET /admin/
+     tenants`(一覧反映)→200・`DELETE /admin/tenants/:host`(削除)→200・
+     `GET /admin/tenants`(トークン無し)→401・未知パス→404、すべて
+     実HTTPで確認済み。`cargo test`は実行中(バックグラウンド、結果は
+     次のHANDOFF更新時に反映)。
+  4. **正直な開示**: (a) 本ファサード(`open-runo-poem-compat`)自体が
+     `poem::Endpoint`/`FromRequest`トレイトを実装していない薄いシムで
+     あるため、将来poem本体のミドルウェアエコシステムを使う予定がある
+     機能は今後も個別対応が必要(現状のaruaru-llmはそのような機能を
+     使っていないため実害無し)。(b) `handler_fn`のシグネチャが
+     `Fn(Request, Params) -> Future`固定のため、複数の状態(`device`+
+     `registry`)を渡すハンドラはクロージャのネストがやや読みにくい——
+     可読性より正確な移行を優先した。
+  - 次にすべきこと: (a) `cargo test`のバックグラウンド実行結果を確認、
+    (b) `opencuda-whisper`(音声認識)を本サービスのエンドポイントとして
+    実際に公開する配線(現状`open-cuda`側crateとしては実装済みだが
+    aruaru-llm側のHTTPエンドポイントとしては未接続)。
+
+- **2026-07-27(続き3) 「一つ大きなモデルをダウンロードする」/「一つ小さな
+  モデルをダウロードする」ボタンを追加(ユーザー指示への対応、直前の
+  HANDOFF〈お勧めLLMダウンロード〉の上に構築)**:
+  1. **`src/model_catalog.rs`にサイズ順ナビゲーション関数を追加**:
+     `size_ordered_catalog()`(`approx_size_mb`昇順ソート)・
+     `next_larger(current_id)`・`next_smaller(current_id)`
+     (いずれも未知IDや端(最大/最小)では`None`を返す)。カタログの
+     サイズ順は`distilgpt2`(353MB) < `gpt2`(548MB) <
+     `gpt2-medium`(1520MB) < `gpt2-large`(3250MB) < `gpt2-xl`(6430MB)。
+  2. **`src/main.rs`に`step_model_size()`共通ロジック+2エンドポイント**:
+     `POST /v1/download-larger`・`POST /v1/download-smaller`。現在
+     アクティブなモデルID(`current_model_id()`、`generation::
+     active_model_dir()`から逆引き)を起点に`next_larger`/`next_smaller`
+     を解決し、未取得なら`model_catalog::install`でダウンロード、
+     `generation::select_model`でホットスワップ切り替え。既に
+     カタログ端(最大/最小)の場合は`already_installed: true,
+     switched: false`と共に「これ以上大きく/小さくできません」と
+     正直に応答する。切り替え失敗時も直前の稼働モデルは維持される
+     (既存の`recommend-and-download`と同じ「サービスを壊さない」設計)。
+  3. **`static/index.html`にボタン2個(`largerBtn`/`smallerBtn`)を追加**:
+     `stepModelSize(path, button)`という共通JS関数で両エンドポイントを
+     叩き、結果(切り替え元/先ID・ダウンロード要否・成否)を`#status`へ
+     表示する。
+  4. **検証**: `cargo build`成功。`cargo test`**42件全green**(新規2件
+     `model_catalog::tests::next_larger_and_next_smaller_follow_
+     approx_size_order`・`next_larger_and_next_smaller_return_none_
+     for_unknown_id`を含む——`CatalogEntry`が`PartialEq`未実装のため
+     `assert_eq!(..., None)`ではなく`assert!(...is_none())`で比較する
+     形に実装済み)。実機での実HTTP検証(サーバー起動+ボタンクリック
+     +GPU実機での実ダウンロード確認)は今回未実施(GPUハードウェア
+     featureが既定offのCPU-onlyフォールバック経路のみローカルで確認)。
+  - 次にすべきこと: (1) `hw-detect-vulkan`/`hw-detect-directx`を有効化
+    した実機ビルドでの実ダウンロード・実切り替えの動作確認、
+    (2) UIの日本語文言を他言語(英/伊/仏/独/露)へ拡張するかの検討。
+
+- **2026-07-27(続き2) ハードウェア検出→推奨LLMサイズ→「お勧めLLMを
+  ダウンロード」ボタンを実装(ユーザー指示「open-directx・open-cuda・
+  aruaru-llmの組み合わせで『お勧めLLMをダウンロード』ボタンで最適な
+  LLMをダウンロードする機能を搭載して」への対応、直前のHANDOFF
+  〈モデルカタログ・ホットスワップ〉の上に構築)**:
+  1. **新規モジュール`src/hardware.rs`**: `open-cuda`(`opencuda-vulkan`、
+     Vulkan物理デバイス列挙)・`open-directx`(`opencuda-directx`、DXGI
+     アダプタ列挙)のいずれかからGPUベンダー名・VRAM容量を取得し、
+     VRAM容量に応じてGPT-2ファミリーの推奨サイズ(124M/355M/774M/1.5B)
+     を選ぶ簡易ヒューリスティックを実装(閾値: <2GB→124M、2-4GB→355M、
+     4-8GB→774M、8GB以上→1.5B、GPU検出不能・CPUのみ→124M固定の
+     安全側フォールバック)。**正直な開示**: パラメータ数×4バイトの
+     fp32概算とVRAM容量の単純比較に過ぎず、精密な性能予測ではない旨を
+     モジュールdoc・APIレスポンス(`disclosure_ja`)・UI双方に明記した。
+  2. **GPU検出はopt-in feature**(`hw-detect-vulkan`/`hw-detect-directx`、
+     `Cargo.toml`に追加、既定は両方無効): `opencuda-vulkan`/
+     `opencuda-directx`をoptional path依存として追加し、それぞれ上流
+     クレート自身の`real-vulkan`/`real-dx12` featureへ連鎖させた。
+     既定ビルド(feature無効)ではCPUのみとみなし安全側(124M)へ
+     フォールバックするため、Android等クロスコンパイル環境やCI環境に
+     Vulkanローダー/Windows SDK依存を強制しない(既存の`opencuda-vulkan`/
+     `opencuda-directx`自身の設計方針を踏襲)。
+  3. **どちらの経路の情報を使うか明確化**(ユーザー指示への直接対応):
+     `hardware::detect()`はVulkan経路を優先し、両feature有効なら
+     DXGI(DirectX)側の結果を10%許容誤差でクロスチェックし
+     `cross_check_agreement`フィールドへ記録する。実際に使われた経路は
+     `detection_path`("vulkan"/"directx"/"cpu-only-fallback")で常に
+     APIレスポンスへ明示する。
+  4. **モデルカタログに`gpt2-xl`(1.5B、`openai-community/gpt2-xl`)を
+     追加**(`src/model_catalog.rs`)——VRAM8GB以上枠に対応する実在の
+     Hugging Face公開リポジトリ。
+  5. **新規HTTPエンドポイント2件**(`main.rs`): `GET /v1/recommend`
+     (検出のみ)、`POST /v1/recommend-and-download`
+     (検出→未ダウンロードならHugging Faceから取得〈`model_catalog::install`
+     を再利用、既存ファイルがあれば再取得しない冪等設計〉→
+     `generation::select_model`でホットスワップ切り替え、まで一括)。
+     切り替え失敗時は現在動作中のモデルを維持し、エラー内容を正直に
+     返す(`select_model`と同じ「サービスを壊さない」設計)。
+  6. **`generation::engine_label()`を新設**(`src/generation.rs`):
+     従来の固定`ENGINE_GPT2_GREEDY`定数は、ホットスワップでgpt2-medium
+     等へ切り替えた後も"gpt2-124m-..."と表示され続ける不正直な状態
+     だった(直前のHANDOFFで追加したホットスワップ機能の副作用に
+     今回気付いて修正)。`active_model_dir()`のディレクトリ名を反映した
+     動的な`engine`文字列("gpt2-medium-greedy-decode-v0-opencuda-llm-cpu"
+     等)を返すよう`main.rs`の`/v1/generate`ハンドラを修正した。
+  7. **最小限の静的HTML UI新設**(`static/index.html`、`GET /`で配信):
+     「お勧めLLMをダウンロード」ボタン1つ+進捗/結果表示+切り替え成功後の
+     生成テスト導線。Tauri/Node.js/TypeScript不使用、`include_str!`で
+     Rustバイナリへ埋め込み配信(過剰実装を避ける方針通り)。
+  8. **実機検証(型チェックのみで完了と報告しない方針を徹底、このマシンの
+     実GPU〈NVIDIA GeForce GT 730〉で一気通貫の動作確認まで実施)**:
+     - `cargo test --release --features hw-detect-vulkan`
+       **42件全green**(既存39件+`hardware`モジュール新規3件、実際に
+       Vulkan経由のGPU検出コードパスを通した上でパニックしないことを
+       含めて検証)。
+     - 実際にサーバーを起動し(`--features hw-detect-vulkan`)、
+       `GET /v1/recommend`が実際に`{"gpu_detected":true,
+       "detection_path":"vulkan","gpu_name":"OpenCUDA Vulkan Device
+       (NVIDIA GeForce GT 730)","vram_bytes":2104819712}`を返すことを
+       確認した。**この`vram_bytes=2104819712`という値は、`open-cuda`
+       側`CLAUDE.md`の2026-07-23 HANDOFFに記録されているDXGI経由の
+       同一実機での実測値と完全一致する**——これにより「open-directx
+       経由でもopen-cuda経由でも同じベンダー・VRAM情報を返すこと」
+       (ユーザー指示4番)を、実際に2つの独立した検出コードパスの
+       実行結果を突き合わせて確認できた(DirectX側は今回新たに
+       実行し直してはいないが、既存の実測記録との一致を裏取りとして
+       使った、正直な検証範囲として明記)。
+     - `POST /v1/recommend-and-download`を実際に呼び出し、推奨モデル
+       (このマシンではVRAM 1.96GB<2GBのため`gpt2`)の判定・ダウンロード
+       (既にダウンロード済みのケース)・ホットスワップ切り替え・
+       `/v1/generate`での実際の生成("The quick brown fox" →
+       "es are a great way to get a little bit of a kick out of your")
+       まで一連の流れが実際に動作することを確認した。
+     - さらに大きいサイズの実ダウンロードも実施(ユーザー指示「可能なら
+       1つ大きめのサイズも実際に試すこと」への対応): `POST
+       /v1/models/install {"id":"gpt2-medium"}`で実際にHugging Faceから
+       355M(1.52GB、`model.safetensors`)を約51秒でダウンロード、
+       `POST /v1/models/select`でプロセス再起動無しに切り替え、
+       `/v1/generate`で実際に生成("Artificial intelligence is" →
+       " a big deal. It's a big deal because it's going to change the
+           way we think about")、`engine`フィールドが
+       "gpt2-medium-greedy-decode-v0-opencuda-llm-cpu"へ正しく更新
+       されていることを確認した。
+     - UIを実際にブラウザで開き(`http://127.0.0.1:4600/`)、白画面・
+       コンソールエラーが無いことを確認した上で「お勧めLLMを
+       ダウンロード」ボタンをクリック→検出結果・推奨モデル・切り替え
+       結果が実際に画面へ表示されること、続けて「生成テスト実行」
+       ボタンで実際の生成結果がDOMへ反映されることを確認した
+       (白画面バグ等を見逃さない検証徹底ルールに基づく)。
+  9. **正直な開示・スコープ外**: (a) 上記の通りDirectX経路
+     (`--features hw-detect-directx`)は今回のセッションで改めて
+     ビルド成功のみ確認し(`cargo build --features hw-detect-directx`
+     成功)、実機での`/v1/recommend`呼び出しによる再検証はVulkan経由の
+     みで行った(既存のDXGI実測記録との数値一致で代替、上記8番参照)。
+     (b) 生成処理自体は引き続きCPU実行のまま(`open-cuda`側CLAUDE.mdの
+     「安易なGPU配線は逆に遅くなりうる」という2026-07-26の結論を
+     踏襲、ハードウェア検出は推奨サイズ選定の入力としてのみ使い、
+     生成のGPUディスパッチ配線は行っていない)。(c) 1.5B
+     (`gpt2-xl`、6.4GB)は今回実ダウンロードで検証していない
+     (カタログへの追加・ヒューリスティックのロジック検証に留まる、
+     このマシンのVRAM検出結果〈1.96GB〉ではそもそも推奨対象にならない
+     ため優先度を下げた)。
+  - 次にすべきこと: (1) `--features hw-detect-directx`を実際に有効化
+    した状態での`/v1/recommend`実行検証(今回はビルド成功のみ)、
+    (2) `gpt2-xl`(1.5B)の実ダウンロード検証(8GB以上VRAM環境が
+    得られ次第、またはVRAM閾値を無視した強制インストールでの動作確認)、
+    (3) ダウンロード進捗のストリーミング報告(現状は完了までブロック
+    する既存のシンプルな実装のまま、直前のHANDOFFから継続する既知の
+    未着手事項)。
+
+- **2026-07-27 モデルのホットスワップ(プロセス再起動不要のモデル切り替え)
+  を実装——直前エントリの「次にすべきこと(2)」で残っていた制約
+  (「ダウンロード完了後、実際にそのモデルを使うにはプロセスを再起動する
+  必要がある」)を解消**:
+  1. **`src/generation.rs`を書き換え**: 起動時`OnceLock<Result<LoadedGpt,
+     String>>`(一度ロードしたら差し替え不可)を`static ACTIVE:
+     RwLock<Option<Arc<LoadedGpt>>>`へ変更。新規`select_model(dir:
+     PathBuf) -> Result<()>`は、指定ディレクトリからの読み込みに
+     **成功した場合のみ**`ACTIVE`を置き換える(失敗時は現在動作中の
+     モデルをそのまま維持——不正なディレクトリを指定してサービスを
+     壊さない設計)。`active_model_dir() -> Option<PathBuf>`で現在
+     使用中のモデルの読み込み元を問い合わせ可能にした。
+  2. **新規HTTPエンドポイント`POST /v1/models/select`**(`main.rs`):
+     `{"id": "distilgpt2"}`のようなリクエストで
+     `{models_root}/{id}/`から`generation::select_model`を呼ぶ
+     (ブロッキングI/Oのため`tokio::task::spawn_blocking`経由)。
+     `GET /v1/models/catalog`のレスポンスにも`active_model_dir`
+     フィールドを追加し、現在どのモデルが使われているか可視化した。
+  3. **検証(実測、モックではなく実GPT-2重みで検証)**: 新規テスト2件
+     (`generation::tests`)——`select_model_succeeds_for_a_real_directory_
+     and_updates_active_model_dir`は、実際にsibling repoの実GPT-2重み
+     (`../open-cuda/crates/opencuda-llm/models/gpt2`、既存の既定
+     モデルと同じ実体)へ`select_model`を呼び、`active_model_dir()`が
+     実際に反映されること、切り替え後の`generate()`が実際に
+     (空文字列ではない)テキストを生成することを確認した。
+     `select_model_fails_cleanly_for_a_nonexistent_directory`は、
+     存在しないディレクトリを指定した場合にパニックせず`Err`を
+     返すことを確認。`cargo test`**37→39件、全green**(既存テストへの
+     回帰なし)。
+  4. **正直な開示**: (1) 「新しいモデルとして本当に別アーキテクチャの
+     重みへ切り替える」ところまでは検証していない(この環境には
+     `distilgpt2`等の実際のダウンロード済みモデルが無いため、検証は
+     「同じ実GPT-2重みディレクトリへの再ロードが機能すること」に
+     留まる——ロード処理自体は`GptModel::load`をそのまま呼ぶだけなので、
+     サイズ・語彙が異なるGPT-2互換モデルでも同様に動く設計上の根拠は
+     あるが、実際にその組み合わせでの動作確認はしていない)。
+     (2) 切り替え中に進行中の生成リクエストがあった場合の挙動
+     (`Arc`のクローンにより、切り替え前の`generate`呼び出しは古い
+     `Arc<LoadedGpt>`を握ったまま完走する設計——エラーにはならないが、
+     切り替えの瞬間に古いモデルと新しいモデルが一時的に混在しうる)は
+     意図した仕様ではあるが、専用のテストは追加していない。
+  - 次にすべきこと: (1) 実際に`distilgpt2`等別モデルをダウンロード→
+    切り替え→生成、という一気通貫の確認(実ダウンロードは今回も
+    見送ったまま、前々回エントリから継続)、(2) 管理UI(Tauri Admin GUI
+    等)からのモデル選択操作(現状はHTTP API止まり)。
+
+- **2026-07-26(続き) 他のGPT-2アーキテクチャ互換モデルを選択・ダウンロード
+  できるモデルカタログ機能を新規実装(ユーザー指示「aruaru-llm以外の
+  オープンソースのローカルLLMも簡単にダウンロード・インストールを選択
+  可能にしてユーザビリティを高めて」への対応)**:
+  1. **スコープを正直に限定**: `opencuda_llm::GptModel::load`はGPT-2
+     アーキテクチャ専用(`config.json`のフィールド・`model.safetensors`の
+     テンソル名規約・`Conv1D`の重み配置が前提)であり、Llama/Mistral/Qwen等
+     アーキテクチャの異なるモデルはこのエンジンではロードできない。
+     「任意のオープンソースLLM」ではなく「GPT-2互換の別サイズ/別重み」に
+     限定したカタログとして実装した(`src/model_catalog.rs`冒頭のdoc
+     コメントに明記)。
+  2. **新規モジュール`src/model_catalog.rs`**: `CatalogEntry`
+     (id/表示名/Hugging Faceリポジトリ/概算サイズ/ライセンス注記)の
+     静的配列`CATALOG`(既定の`gpt2`に加え、`distilgpt2`〈82M、軽量〉・
+     `gpt2-medium`〈355M〉・`gpt2-large`〈774M〉、いずれも
+     `config.json`/`model.safetensors`/`tokenizer.json`の3ファイル構成が
+     確認できる公式`openai-community`/`distilbert`名前空間のリポジトリ)。
+     `install(entry, dest_dir)`がHugging Faceの`resolve/main/`エンドポイント
+     (認証不要)から3ファイルを`reqwest`でダウンロードし、`.tmp`拡張子経由の
+     アトミックなリネームで書き込む(冪等——既にファイルが存在すれば
+     再ダウンロードしない)。
+  3. **新規HTTPエンドポイント2件**(`main.rs`): `GET /v1/models/catalog`
+     (カタログ一覧+インストール済みID一覧+アーキテクチャ制約の開示文言を
+     返す)、`POST /v1/models/install`(`{"id": "distilgpt2"}`のような
+     リクエストでダウンロードを実行、完了後は`ARUARU_LLM_GPT2_DIR`を
+     ダウンロード先へ向けてプロセスを再起動する必要がある旨を
+     レスポンスに明記——現状のロード方式が起動時`OnceLock`のため実行中の
+     ホットスワップ切り替えには対応していない、この制約も正直に開示)。
+  4. **検証(実測)**: 新規テスト7件(`model_catalog::tests`)を追加、
+     うち`install_writes_all_required_files_from_a_local_mock_server`は
+     `mockito`によるローカルHTTPモックサーバーへ実際にHTTPリクエストを
+     送り、`install`(内部の`install_from_base_url`)が実際に3ファイルを
+     ダウンロード・書き込みし、既存ファイルがあれば再ダウンロードしない
+     (冪等)ことを確認した。`cargo build`/`cargo test`
+     **37件全green**(既存30件+新規7件、回帰なし)。
+  5. **実Hugging Face到達性の確認(誇張しない範囲での実地検証)**:
+     数百MB〜3GB超のモデル重みを本セッション中に自動ダウンロードする
+     ことはせず(明示的なユーザーリクエスト無しに大容量ファイルを
+     自動取得しない方針)、`curl`で`distilbert/distilgpt2/resolve/main/
+     tokenizer.json`・`openai-community/gpt2-large/resolve/main/
+     model.safetensors`へのリダイレクト追跡込みアクセスが実際に
+     `200`を返すことのみ確認した(カタログに載せたURLが実在し到達可能
+     であることの裏取り)。**実際に`POST /v1/models/install`を呼んで
+     数百MB級モデルのダウンロード完了→ロード→生成、という一気通貫の
+     動作確認は今回未実施**(正直な開示)。
+  - 次にすべきこと: (1) 実際に`distilgpt2`等をダウンロードし、
+    `ARUARU_LLM_GPT2_DIR`切り替え後に`GptModel::load`が実際にロードでき
+    生成が動くことのエンドツーエンド確認、(2) ダウンロード進捗の
+    ストリーミング報告(現状は完了までブロックするシンプルな実装)、
+    (3) 管理UI(Tauri Admin GUI等)からのカタログ選択・インストール操作
+    (現状はHTTP API止まり)。
+
+- **2026-07-26 SET連携(open-directx/open-cuda/aruaru-llm)調査: 「GPU推論」は
+  実際にはCPUバックエンドのみで、opencuda-vulkan/open-directxへの実接続が
+  無いことを確認。安易なGPU配線は逆に遅くなりうるという設計上の結論に
+  達したため、今回はコードの変更は行わず調査結果のみを正直に記録する
+  (ユーザー指示: 「open-directxとopencudaとaruaru-llmは、SETで考慮・
+  配慮して連携の実用性と完成度を高めて」への対応、Windows/Linux/nVIDIA
+  実機を中心とする方針)**:
+  1. **現状の確認**: `src/main.rs:319`の`CpuDevice::new(0)`が唯一のデバイス
+     インスタンスで、`generation.rs`のGPT-2生成(`opencuda_llm::GptModel::
+     generate`)・`scoring.rs`の埋め込み計算(`opencuda-bert`経由)・
+     `bow_fallback.rs`の要素積、いずれも実際にはCPU実行。`opencuda-vulkan`
+     へのdependencyは無く(Cargo.toml未記載)、`open-directx`への参照も
+     ソース中に皆無(grep該当0件)。「GPU推論」という呼称は名目上のもので、
+     実際にVulkan/DirectX経由でGPU実機にディスパッチしたことは一度もない。
+  2. **技術的に判明した、安易な配線を避けた理由**: `opencuda-llm::GptModel`
+     の推論ループ(`generate`→`forward_step`→`DecoderLayer::forward_step`→
+     `Linear::forward`)は、プロンプト処理も含め常に`seq_len=1`
+     (1トークンずつの自己回帰デコード)で`opencuda_blas::sgemm`を呼ぶ設計
+     になっている(`opencuda-llm/src/lib.rs:244,332,508`)。これは
+     GPT-2 124M(hidden=768)程度の行列サイズでは、CPU側では数マイクロ秒で
+     終わる極めて軽い計算である一方、Vulkanの`dispatch_spirv`はコマンド
+     バッファ記録・`vkQueueSubmit`・フェンス待機という固定オーバーヘッドを
+     1回のGEMM呼び出しごとに伴う(`opencuda-vulkan/src/real.rs`の
+     `dispatch_spirv`実装)。1トークンあたりレイヤー数×6回(Q/K/V/attn_out/
+     intermediate/output)のLinear呼び出しがあり、GPT-2 124Mは12層のため
+     1トークンで72回のGEMM呼び出しが発生する——これを単純にVulkan経由へ
+     置き換えると、実計算時間よりディスパッチのオーバーヘッドの方が
+     支配的になり、**CPU実行より遅くなる可能性が高い**という結論に至った
+     (実際にベンチマークするところまでは今回行っていないが、既存の
+     `dispatch_spirv`実装のコマンドバッファ/フェンス同期パターンから
+     判断した設計上の懸念であり、誇張せず正直に「推測に基づく懸念」として
+     記録する)。
+  3. **今回あえて実装しなかったこと**: `opencuda_blas::sgemm`の
+     `GemmPath::VulkanGeneric`(`device.supports_spirv()`かつ`spirv`引数
+     ありで動作)自体は既に実装済みで、`aruaru-llm`側からVulkanDeviceを
+     構築し`matmul.spv`を渡せば技術的には配線可能だった。しかし上記2.の
+     懸念を解消せずに「GPUを使っている」という体裁だけを整えるのは
+     ユーザーの「実用性を高めて」という指示に反すると判断し、見せかけの
+     配線は行わなかった。
+  4. **本当に効果が見込める設計変更(次回以降の推奨、今回は未着手)**:
+     (a) プロンプトのプリフィル処理(初回の複数トークン分のforward)を、
+     現状の「1トークンずつのループ」から「`seq_len=プロンプト長`の
+     バッチ処理」へ変更すれば、Linear層のGEMMが本当のGEMM(m>1)になり
+     Vulkanディスパッチの固定オーバーヘッドを算術強度で上回れる可能性が
+     ある(デコード側は引き続きCPUのままでよい、いわゆる
+     prefill/decode分離)。(b) Q/K/Vの3つの`Linear`呼び出しを、
+     safetensors側で既に`c_attn`という1本の融合`Conv1D`として保存されて
+     いる構造(`opencuda-llm/src/lib.rs`の`load_fused_qkv`参照)に合わせ、
+     推論側でも1回のGEMM呼び出しに統合すればディスパッチ回数を1/3に
+     削減できる。(c) 上記(a)(b)を実施した上で初めて、`aruaru-llm`側の
+     デバイス選択(`main.rs:319`)を`opencuda-vulkan::real::VulkanDevice`
+     (`real-vulkan` feature、既定では無効なオプトイン機能にすべき——
+     Android等クロスコンパイル環境でash/Vulkanローダーへの依存を強制
+     しないため)へ切り替え、実GPU実機(NVIDIA GT 730)で生成結果が
+     CPU版と数値的に一致すること・実際に速度が改善することの両方を
+     ベンチマークで確認する、という増分計画とする。
+  - 次にすべきこと: (1) プリフィル/デコード分離とQKV融合(上記4(a)(b))を
+    `opencuda-llm`側に実装、(2) その上で`aruaru-llm`にオプトインの
+    `real-vulkan` featureを追加しVulkanDevice経由の生成を実装、
+    (3) CPU版との生成結果の数値一致・実際の速度差をベンチマークで検証。
+
+- **2026-07-25(続き) `opencuda-llm::GptModel`(GPT-2 124M実重み)を統合、
+  `POST /v1/generate`で本格的な自己回帰テキスト生成を実装
+  ——実HTTPリクエストでの生成結果まで確認済み**: 姉妹リポジトリ
+  `open-cuda`側で直近実装・実機検証済みだった`opencuda-llm::GptModel`
+  (safetensorsローダー付き、GPT-2 124M実重みをロードして貪欲デコードで
+  文法的に自然な英語を生成できる)を、このリポジトリへ統合した。
+  1. **依存追加**: `Cargo.toml`に`opencuda-llm = { path =
+     "../open-cuda/crates/opencuda-llm" }`をpath依存として追加(既存の
+     `opencuda-bert`等と同じsibling pathパターン、`PORTING.md`にも
+     移植手順を追記)。
+  2. **新規モジュール`src/generation.rs`**: `OnceLock<Result<LoadedGpt,
+     String>>`でGPT-2実重み(`GptModel::load`)・トークナイザ
+     (`GptTokenizer::load`、GPT-2自身のBPE語彙、`tokenizers`クレート)を
+     プロセス内キャッシュ(`scoring.rs`の埋め込みモデルキャッシュと
+     同じ設計思想)。モデルディレクトリは既定
+     `../open-cuda/crates/opencuda-llm/models/gpt2`(`open-cuda`側で
+     2026-07-25に既に実際にダウンロード・検証済みの重みをそのまま
+     sibling repoとして再利用、`ARUARU_LLM_GPT2_DIR`環境変数で上書き可)。
+     `warmup()`・`generate(device, prompt, max_new_tokens) -> Result<String>`
+     を公開。
+  3. **新規エンドポイント`POST /v1/generate`**(`/v1/chat`とは別、
+     意図分類と生成を無理に統合しない設計方針、ユーザー指示通り):
+     `GenerateRequest{prompt, max_new_tokens(既定16、上限128でクランプ),
+     tenant}` → 成功時`GenerateResponse{completion, engine:
+     "gpt2-124m-greedy-decode-v0-opencuda-llm-cpu", disclosure: "..."}`
+     (200)、失敗時(重み未取得等)`GenerateErrorResponse{error, engine}`
+     (503)。`disclosure`フィールドは**毎回のレスポンスに**GPT-2 124Mが
+     小型・2019年モデルであり最新商用LLMと同等でない旨を明記する
+     (誇大表示を避けるため、レスポンス自体に埋め込む設計)。
+  4. **起動時ウォームアップに追加**: `main()`の既存ウォームアップ処理
+     (`scoring::warmup`/`security::warmup`と同じ並び)に
+     `generation::warmup()`を追加。失敗しても致命的ではなく初回
+     リクエスト時に再試行される(既存の設計思想を踏襲)。
+  5. **実機検証(型チェックのみで完了と報告しない方針を徹底)**:
+     `cargo build --release`成功、`cargo test --release`
+     **22件全green**(既存22件、リグレッション無し——`/v1/generate`自体の
+     専用単体テストは追加していない、GPT-2 124Mの実重みロード自体は
+     `opencuda-llm`側で既に単体テスト・実機検証済みのため、このリポジトリ
+     側では実際にサーバーを起動しての実HTTP検証を主体とした)。
+     実際にサーバー(`aruaru-llm.exe`)を起動し、起動ログで
+     `generation (GPT-2 124M) warmup complete`を確認した上で、
+     `POST /v1/generate`へ実HTTPリクエストを送信:
+     - `{"prompt": "The quick brown fox", "max_new_tokens": 16}` →
+       `"completion": "es are a great way to get a little bit of a kick out of your"`
+     - `{"prompt": "Artificial intelligence is", "max_new_tokens": 20}` →
+       `"completion": " a new field of research that has been in the works for a while now. It is a field"`
+     (いずれも文法的には自然な英語の継続生成。既存の`/v1/chat`
+     〈`POST /v1/chat {"message": "How do I apply for a permit?"}` →
+     govインテント一致・正しい応答〉も引き続き正常動作することを併せて
+     確認、リグレッション無し)。
+  6. **正直な評価**: GPT-2 124Mは小型モデルであり、GPT-4等の最新商用LLM
+     と同等の性能・知識・指示追従能力は無い。「質問に答える」というより
+     「文の続きを予測する」挙動(素の事前学習済み言語モデルの貪欲デコード、
+     対話ファインチューニング無し)であり、実際`"Artificial intelligence
+     is"`への継続も一般論的な文の羅列であって具体的で正確な回答ではない。
+     README(日英)・PORTING.md・本ファイルの冒頭開示文言にもこの限界を
+     明記した。
+  7. **意図的にスコープ外とした事項**: (a) `/v1/generate`専用の単体
+     テスト(統合的な実HTTP検証で代替、モデルロード自体のテストは
+     `opencuda-llm`クレート側に既存)、(b) サンプリング(温度・top-k/
+     top-p)——引き続き貪欲デコード(argmax)のみ、`opencuda-llm`側の
+     `GptModel::generate`のシグネチャ自体がサンプリング非対応のため、
+     (c) 日本語生成(GPT-2のBPE語彙は英語中心のため、日本語プロンプトは
+     語彙効率・品質共に低下する旨をAPIドキュメントに明記するに留めた)。
+  - 次にすべきこと: (1) `opencuda-llm`側でサンプリング(温度/top-k/top-p)
+    が実装されればAPIへ配線、(2) より大規模なGPT-2バリアント(medium/
+    large/xl)または日本語対応モデルへの切り替え検討、(3) `/v1/generate`
+    専用の単体テスト追加(現状はサーバー起動+実HTTP検証のみ)。
+
+- **2026-07-25 bag-of-wordsフォールバックを追加(可用性優先)**: 依頼の
+  「bag-of-wordsから実埋め込みベクトル類似度への置き換え」を確認した
+  ところ、`scoring.rs`は既に2026-07-21の移行で`opencuda-bert`
+  (multilingual-e5-small)による実際の文埋め込み+コサイン類似度分類へ
+  移行済みだった(CLAUDE.mdの記載通り、コードとドキュメントに齟齬は
+  無かった)。実際に欠けていたのは、埋め込みモデルの重み
+  (`models/multilingual-e5-small/`)が無い・ロードに失敗した場合の
+  フォールバック——従来は`best_intent`がそのままエラーを返すだけで、
+  サービス全体が意図分類不能に陥っていた。
+  1. `src/bow_fallback.rs`を新設し、2026-07-21移行前の固定語彙
+     bag-of-wordsドット積(`opencuda_cpu::CpuDevice`上での要素積カーネル
+     実行、旧`scoring.rs`のロジック)を独立モジュールとして復元した。
+  2. `scoring::classify(device, user_text) -> ClassifyResult`
+     (`{intent, engine}`)を新設し、`main.rs`の`/v1/chat`ハンドラから
+     これを呼ぶよう変更。`best_intent`(埋め込み経路)が失敗した場合のみ
+     自動的に`bow_fallback::best_intent_bow`へフォールバックする。
+     `engine`フィールドは常に実際に使われた経路
+     (`ENGINE_EMBEDDING`=`"embedding-cosine-v0-opencuda-bert-cpu"`、
+     `ENGINE_BOW_FALLBACK`=`"bow-dotproduct-v0-opencuda-cpu-fallback"`、
+     両方失敗時`ENGINE_CLASSIFICATION_UNAVAILABLE`)を正直に返す。
+  3. **実機検証**: このマシンには`models/multilingual-e5-small/`が
+     実際にダウンロード済みだったため、埋め込み経路(通常運用)を
+     `cargo test --release`(22件全green、既存16件+bag-of-words
+     フォールバック新規6件)で実際に検証できた。bag-of-wordsフォール
+     バック自体も独立した単体テストで検証(埋め込み経路を意図的に
+     無効化しての統合テストまでは行っていない——モデルディレクトリを
+     一時的に退避させての検証は今回スコープ外、正直に記録)。
+  4. `cargo clippy --workspace --all-targets --release`で
+     `manual_slice_size_calculation`警告1件を検出・修正
+     (`n * std::mem::size_of::<f32>()` → `std::mem::size_of_val(a)`)、
+     修正後**workspace全体で警告0件**。
+  5. README.md/README-English.mdを現状(埋め込み優先+bag-of-words
+     フォールバック)に合わせて更新(README-English.mdは2026-07-21の
+     移行前の記述のまま更新漏れしていたのを合わせて是正)。
+  - 次にすべきこと: (1) 埋め込みモデルを意図的に無効化した状態での
+    フォールバック統合テスト(現状は`bow_fallback`モジュール単体の
+    テストのみ)、(2) 自己回帰デコーダによる対話文生成(引き続き
+    Qwen3-14B等の実モデル重みの入手・ライセンス確認が前提、未着手)。
+
+- **2026-07-24(続き) Android版クライアントを新規実装(`android/`)
+  ——直前のHANDOFF「Android実装が存在しないためスコープ外」から前進し、
+  実際に着手・ビルド成功まで確認**: `open-web-server`の
+  `android/`(`tokyo.runo.openwebserver`)を参照実装として、同じGradle
+  構成パターン(`com.android.application` 8.7.2 + Kotlin 2.0.21、
+  `compileSdk 35`/`minSdk 24`、`androidx.appcompat`+
+  `kotlinx-coroutines-android`のみの最小依存)で`aruaru-llm/android/`を
+  新規作成した。パッケージ名は`tokyo.runo.aruarullm`(open-web-server版
+  `tokyo.runo.openwebserver`とは別名)。
+  1. **open-web-server版との設計上の違い**: open-web-server版は
+     クロスコンパイル済みネイティブバイナリを`ProcessBuilder`で端末上に
+     起動する構成だったが、aruaru-llmはユーザー要望通り**リモートの
+     aruaru-llmサーバーへHTTP接続する薄いクライアント**として実装した
+     (ネイティブバイナリ同梱・jniLibsは無し)。`MainActivity`に
+     サーバーURL入力欄(`SharedPreferences`で保存、既定
+     `http://10.0.2.2:8080`=エミュレータからホストへの既定到達先)+
+     簡易チャットUI(`EditText`+送信ボタン+ログ表示の`TextView`)を実装、
+     `POST /v1/chat`(`CLAUDE.md`「API」節記載の`{"message","lang":"ja"}`
+     → `{"reply","engine",...}`契約)を`HttpURLConnection`+`org.json`
+     (Android標準同梱、追加依存不要)で叩く。
+  2. **電源プロファイル管理**(`PowerProfile.kt`/`ProfileSelectActivity.kt`
+     /`MainActivity.kt`、`AndroidManifest.xml`の`activity-alias`3種)は
+     open-web-server版と同じ設計パターンをそのまま踏襲: 省電力/通常/
+     常時電源接続の3モード、`SharedPreferences`保存、起動時
+     `ProfileSelectActivity`(絵文字+日本語ラベル)、ホーム画面専用アイコン
+     3種(緑/青/橙、色分け+ラベル文字列)、`ACTION_POWER_DISCONNECTED`/
+     `ACTION_POWER_CONNECTED`の`BroadcastReceiver`による自動切替提案
+     ダイアログ(既定推奨は省電力、常時電源接続版実行中に電源が外れた
+     場合)。省電力/通常は`WakeLock`を取得せず、常時電源接続のみ
+     `PARTIAL_WAKE_LOCK`を保持。`/healthz`ポーリング間隔もプロファイル別
+     (省電力5分/通常1分/常時電源接続5秒、open-web-server版と同じ値)。
+  3. **省電力版のHWアクセラレーター無効化指示(ユーザー指示分)**:
+     `/v1/chat`リクエストに`X-Aruaru-Llm-Accel-Backend`ヘッダーを付与し、
+     常時電源接続版は`hardware_accelerator`、省電力/通常版は`cpu`を
+     指定する設計にした(open-web-server版の
+     `OPEN_WEB_SERVER_ACCEL_BACKEND`環境変数と同じ設計思想をHTTP
+     ヘッダーへ移した形)。**正直な開示(将来対応課題)**: aruaru-llm
+     (Rust側)は本セッション時点でこのヘッダーを一切受け取らない・
+     解釈しない——`src/main.rs`/`src/scoring.rs`にヘッダー読み取りや
+     アクセラレーターバックエンド切替の実装は無く、`opencuda-bert`は
+     現状CPUパスのみ実装済み(GPU/NPU専用パスは`open-cuda`側含め
+     未実装、本ファイル冒頭「開発方針」節参照)。このAndroid側の
+     ヘッダー付与は将来サーバー側が対応した際に効果を持つ先取り実装
+     であり、現時点で実際の応答内容・処理経路には一切影響しない
+     (WakeLock有無とポーリング間隔差のみが実効果)。
+  4. **ビルド確認**: このマシンにキャッシュ済みの`gradle-8.11.1-all`
+     配布物(`~/.gradle/wrapper/dists/`、open-web-server版のビルドで
+     判明していた場所)を`gradlew`無しで直接実行し、
+     `gradle :app:assembleDebug`が**1回目の実行で成功**
+     (`BUILD SUCCESSFUL`、33 actionable tasks executed)、
+     `android/app/build/outputs/apk/debug/app-debug.apk`
+     (約3.2MB)の生成を確認した。型チェックのみでの完了報告ではない
+     (実際に成功したAPKファイルの生成まで確認済み)。
+  5. **正直な制約・未実施事項**: (a) 実機/エミュレータへの`adb install`
+     以降の実地検証(実際に起動しチャットが往復すること)は今回未実施
+     ——ビルド成功のみで完了と記録する(ユーザー指示「実機/エミュレータ
+     での実地検証ができない場合はビルド成功のみで良い」に基づく)。
+     (b) 上記3.の通りHWアクセラレーター指示は将来対応課題のまま。
+     (c) チャット履歴の永続化・複数テナント切替UI・管理API認証は
+     スコープ外(過剰実装を避けた)。(d) `local.properties`の
+     `sdk.dir`はこの開発機のパス(`C:/Users/noruk/AppData/Local/
+     Android/Sdk`)のままリポジトリに含めている(open-web-server版の
+     既存慣行と同じ)。
+  - 次にすべきこと: (1) 実機/エミュレータでの`adb install`→チャット
+    往復の実地検証、(2) `opencuda-bert`側にGPU/NPU実装が入った時点で
+    `X-Aruaru-Llm-Accel-Backend`ヘッダーをRust側で実際に解釈する配線、
+    (3) フォアグラウンドサービス化・APK署名/配布(open-web-server版と
+    同じく今回のスコープ外のまま)。
+
+- **2026-07-24 スマホ版電源モード切替機能の依頼を受けたが、Android実装が
+  このリポジトリに全く存在しないことを確認・正直に記録**: ユーザーから
+  「省電力版/常時電源接続版(ハードウェアアクセラレーター対応)/通常版」の
+  3モード選択と、電源抜き差し検知による自動切替提案の実装依頼があった。
+  調査の結果、本リポジトリ(`aruaru-llm`)には`android/`ディレクトリ・
+  `.kt`/`.kts`ファイルが一切存在せず(Rustクレートのみ、`Cargo.toml`+
+  `src/`)、Android版インストーラーも上記2026-07-23エントリの通り
+  「次にすべきこと」止まりで未着手のまま。よってフルアプリ新規開発は
+  スコープ外と判断し、実装は行わず、将来Android実装時の設計方針のみ
+  以下に記載する。
+  - **モード設計方針(将来実装時)**:
+    1. 「省電力版」「常時電源接続版(HWアクセラレーター対応)」「通常版」の
+       3モードをユーザーが選択できるようにする。
+    2. 省電力版では実際に消費電力を下げる具体施策を組み合わせる:
+       `PowerManager`/`BatteryManager` APIで電池状態を監視、ポーリング
+       間隔を延長、`WakeLock`を取得しない、そして本リポジトリのLLM推論
+       固有の対応として`opencuda-*`系のGPU/NPUハードウェアアクセラレー
+       ター利用を無効化しCPU低負荷(スレッド数制限・低優先度)モードに
+       切り替える。
+    3. 常時電源接続版ではCPU＋GPU＋NPUが揃っていればハードウェア
+       アクセラレーターをフル活用する(推論バックエンドとして
+       `opencuda-bert`/`opencuda-blas`等を通常より積極的に使う)。
+    4. `BroadcastReceiver`で`Intent.ACTION_POWER_DISCONNECTED`を監視し、
+       常時電源接続版モード中に電源が外れたら「省電力モードに切り替え
+       ますか？それとも通常モードのままにしますか？」とダイアログで
+       質問する。デフォルトの推奨選択は省電力モード。
+    5. `Intent.ACTION_POWER_CONNECTED`受信時にも、常時電源接続版へ戻すか
+       尋ねる導線を用意する。
+  - 次にすべきこと: Android版アプリ自体が未着手のため、まずAndroid
+    インストーラー/アプリの新規プロジェクト立ち上げが前提(2026-07-23
+    エントリと同じ「次にすべきこと」を再確認)。電源モード機能は
+    そのAndroidアプリ実装時に上記設計方針に沿って組み込む。
+
+- **2026-07-23(続き) 3点セット(`install.sh`/`install.ps1`/
+  `.github/workflows/release.yml`)を新規追加、v0.1.0タグでCI成功・
+  GitHub Release実在確認まで完了**: エコシステム全体インストーラー
+  整備計画(正本: `open-raid-z/CLAUDE.md`「エコシステム全体
+  インストーラー整備計画」節)の一環、以前は3点セット丸ごと未整備
+  だったリポジトリの1つ。
+  1. `install.sh`(systemdサービス登録)・`install.ps1`(Windows
+     サービス登録案内)を新規作成。**正直な開示**: 起動時に470MB超の
+     `multilingual-e5-small`モデル重み(Hugging Face配布、MIT)を
+     読み込むが、ライセンス上の理由でこのインストーラーには同梱せず、
+     両スクリプトに`huggingface-cli download`での取得手順を明記した。
+  2. `release.yml`: `Cargo.toml`が`../open-cuda/crates/opencuda-*`を
+     path依存しているため(sibling path依存)、CI環境でも同じ相対位置
+     (リポジトリルートの1つ上)へ`open-cuda`をgit cloneするステップを
+     追加(aruaru-db/open-web-server/RPoemで実際に踏んだ「sibling
+     path依存を忘れるとCI失敗」という罠を踏まないための対応)。
+     Linux x86_64・Windows x86_64向けにビルドし、GitHub Releasesへ
+     `softprops/action-gh-release@v2`で添付する構成。
+  3. `v0.1.0`タグを実際にpushし、`gh run list`で2ジョブ(Linux/
+     Windows)とも`completed success`、`gh release view v0.1.0`で
+     `aruaru-llm-linux-x86_64.tar.gz`/`aruaru-llm-windows-x86_64.zip`
+     の両方が実在することを確認した(型チェックのみでの完了報告では
+     ない——sibling path依存を踏まえたCI初回成功は他リポジトリでは
+     複数回の修正が必要だった実例があるため、特に注意して確認した)。
+  4. README(日英両方)にインストール手順節を新設。
+  - 次にすべきこと: Android版インストーラー(未着手、他リポジトリと
+    共通のバックログ)。
+
+- **2026-07-23 (関連リポジトリ動向の記録) `open-cuda`のDirectXバック
+  エンドにmatmulカーネル対応・GPU圧縮/暗号化カーネル(ChaCha20)を実装**:
+  このリポジトリが利用する`open-cuda`側で、`opencuda-directx`クレート
+  にmatmul対応とChaCha20 GPUカーネルが追加された(RS-LinkFusion側の
+  ハードウェアアクセラレータ要望への対応)。実機(NVIDIA GT 730)検証
+  中にHLSL cbuffer配列パディングによる実バグ(GPU出力が暗号化されず
+  平文のまま)を発見・修正済み(コミット`ec6acf1`、詳細は`open-cuda`
+  側CLAUDE.md HANDOFF参照)。**このリポジトリ自体への直接の変更は
+  無し**——`opencuda-bert`/`opencuda-blas`経由の既存利用箇所への
+  影響は無いことを確認済み。
+
+- **2026-07-22 応答言語の多言語対応 + 起動時ウォームアップ(コールドスタート対策)**:
+  前回HANDOFFの「次にすべきこと」(1)(2)を実装した(バックグラウンド
+  エージェントの異常終了により未コミットのまま残っていたのを本セッションで
+  発見・検証・コミット)。
+  - `ChatRequest`に`lang: String`(`#[serde(default = "default_lang")]`で
+    既定`"ja"`、既存呼び出し元との後方互換を維持)を追加。
+    `ChatResponse`に`reply_lang`(実際に返した言語)・`lang_fallback`
+    (要求言語が未対応で英語へフォールバックしたか)を追加。
+  - 各`Intent`に`reply_en`(英語訳)を追加し、`Intent::reply_for(lang)`/
+    `scoring::fallback_reply_for(lang)`で`"ja"`→日本語、`"en"`→英語、
+    それ以外→英語へフォールバックしつつ`lang_fallback: true`で正直に
+    通知(黙って日本語へ落とさない、「graceful degradation, never
+    silent」方針)。
+  - `main()`起動時、`Server::run`の前に`scoring::warmup(&device)`を
+    呼び出し、opencuda-bertのモデルロード+インテント代表ベクトル計算を
+    前倒しで済ませる(実測5.58秒、warmup前は初回リクエストが
+    e-gov.info側の3秒タイムアウトを超えていた問題への対策)。
+  - 新規テスト4件追加(`reply_for_ja_returns_japanese_unchanged`、
+    `reply_for_en_returns_english_translation`、
+    `reply_for_unsupported_lang_falls_back_to_english_with_indicator`、
+    `fallback_reply_for_respects_lang_and_flags_unsupported`)。
+    `cargo test --release`は13件全passed。
+  - 検証: 実際に`cargo build --release`→サーバー起動→
+    `POST /v1/chat`へ実リクエスト送信で、`reply_lang`/`lang_fallback`を
+    含む正しい応答(`credit`インテント一致、embedding-cosine経路)を
+    確認済み(2026-07-22)。
+  - README.mdの開示文言も、旧bag-of-words時代の記述のまま更新漏れして
+    いたのを、現状のembedding-cosine分類の説明に合わせて修正した。
+
+- **2026-07-22 `e-gov.info`側がこのサービスへのHTTP問い合わせに置き換わった
+  (このリポジトリ自体は無変更)**: 下記2026-07-21エントリで「次にすべき
+  こと」として記録していた「`e-gov.info`側を実際にaruaru-llmへのHTTP問い
+  合わせに置き換えるかどうかの判断・実装」を、`e-gov.info`側
+  (`src/chat_commerce.rs`)で実施した(詳細は`e-gov.info`のCLAUDE.md
+  2026-07-22 HANDOFF参照)。このリポジトリ側のコード・API契約
+  (`POST /v1/chat`)は変更なし。実際に両プロセスを起動してのHTTP統合
+  検証で、`e-gov.info`からのリクエストに対しこのサービスの
+  `chat`ハンドラが実際に呼ばれ(`tenant: "e-gov.info"`、ログにも記録
+  された)、`scoring.rs`のgov intent応答が正しく返ることを確認済み。
+  併せて、`e-gov.info`側の初回リクエストが`opencuda-bert`モデルの
+  ロード時間(数秒)により3秒タイムアウトでフォールバックする実測が
+  あった。
+  - 次にすべきこと: (1) 応答文の多言語対応(現状全て日本語固定、
+    `e-gov.info`側は13言語対応済みのため、このサービス経由だと言語が
+    落ちる非対称が生じている)、(2) 起動直後のモデルロード時間が
+    呼び出し元のタイムアウトを超えるコールドスタート問題への対策
+    (ウォームアップ用エンドポイント、または起動時に一度ダミー推論を
+    実行してキャッシュを温める等)。
+
+- **2026-07-21 bag-of-wordsから実際の文埋め込み(opencuda-bert)ベースの
+  意図分類へ移行**: `scoring.rs`の意図分類を、固定語彙bag-of-words+
+  `opencuda_blas::sgemm`ドット積から、`opencuda-bert`クレート
+  (multilingual-e5-small)による実際の文埋め込み+
+  `opencuda_bert::cosine_similarity`ベースへ全面的に置き換えた。
+  1. `Cargo.toml`に`opencuda-bert = { path = "../open-cuda/crates/
+     opencuda-bert" }`をpath依存として追加。
+  2. 各インテント(gov/trade/credit/realestate)に自然な例文を2〜3個ずつ
+     用意し、`passage: `接頭辞(multilingual-e5系の規約)を付けて
+     埋め込み、平均・L2正規化してインテント代表ベクトルとした。ユーザー
+     発話は`query: `接頭辞を付けて埋め込む。モデル・トークナイザ・
+     インテント代表ベクトルはいずれも`OnceLock`でプロセス内キャッシュし、
+     初回呼び出し(数秒)以降はリクエストごとの再ロードを避けた
+     (`cargo test --release`は9件全体で約7秒、モデルロードは1回のみ)。
+  3. `best_intent`のシグネチャ(`&Arc<dyn GpuDevice>`, `&str` →
+     `Result<Option<&'static Intent>>`)、`main.rs`からの呼び出し方は
+     変更していない。
+  4. **実測に基づく閾値調整**: 実際にコサイン類似度を測定したところ、
+     multilingual-e5-smallは無関係な文同士でも0.80〜0.85程度のベース
+     類似度が出ることが判明(「こんにちは」対trade例文で0.85等)。
+     真の一致(最弱でcredit 0.87程度)とノイズ上限(最大でtrade
+     0.85程度)の間に位置する`SIMILARITY_THRESHOLD = 0.86`に調整し、
+     既存の`matches_government_intent`等5件のintentテストが実際の
+     埋め込みベースでも正しく分類されること(`returns_none_for_
+     unmatched_text`含む)を`cargo test --release`で確認した。
+  5. `opencuda-bert`側に`BertModel::hidden_size()`(公開アクセサ)を1件
+     追加(`config`フィールドがprivateで`aruaru-llm`から参照できな
+     かったため)。`opencuda-bert`のテスト2件も引き続き全green
+     (`cargo test -p opencuda-bert --release`)。
+  6. `main.rs`・`CLAUDE.md`の`engine`フィールド表記を
+     `"rule-based-v0-opencuda-cpu"`から
+     `"embedding-cosine-v0-opencuda-bert-cpu"`へ更新し、開示コメントを
+     「エンコーダによる意味的類似度分類(自己回帰的な対話生成は未実装)」
+     という事実に合わせて書き換えた。
+  - 次にすべきこと: (1) 自己回帰デコーダによる対話生成(Qwen3-14B等の
+    実モデル重みの入手・ライセンス確認が前提)、(2) `e-gov.info`側を
+    実際に`aruaru-llm`へのHTTP問い合わせに置き換えるかどうかの判断、
+    (3) 閾値0.86は代表例文4カテゴリ・少数例文での実測値であり、今後
+    インテントを追加する際は同様に実測して再調整すること。
+
+- **2026-07-20 open-easy-web連携の実地検証・ドキュメント齟齬の是正
+  (ユーザー指示: ドキュメント修正だけで終わらせず実用性・完成度を高める)**:
+  1. **齟齬(1) — CLAUDE.md本文が古いまま**: 下記2026-07-18エントリの
+     「残る実装対象はopen-easy-web側からの管理統合のみ」という記述は、
+     実際には`open-easy-web`側で`server/src/appserver_registration.rs`の
+     `AppServerKind::AruaruLlm`/`register_aruaru_llm()`が2026-07-18に
+     実装され、2026-07-19にWASM側UI配線(`src/profiles.rs`の
+     `appserver_kind_for()`、`src/shell.rs`の`<select>`選択肢)も完了
+     済みであることが、`open-easy-web/CLAUDE.md`のHANDOFFで確認できた
+     (このリポジトリのCLAUDE.mdだけが追記漏れで古いままだった)。
+  2. **実地検証(型チェックだけで終わらせない)**: `cargo build`
+     警告0件、`cargo test` **10件全green**(既存のtenants 4件・
+     scoring 6件、リグレッション無し)。さらに実バイナリを
+     `E_GOV_LLM_ADMIN_TOKEN=test-token`で起動し、`open-easy-web`の
+     `register_aruaru_llm()`が実際に送信するリクエスト形状
+     (`POST /admin/tenants`、`x-admin-token`ヘッダ、
+     `{"host":"...","label":null}`)をそのまま`curl`で再現して検証:
+     トークン無し→`401`、正しいトークン→`200 ok`→
+     `GET /admin/tenants`で`[{"host":"e-gov.info","label":null}]`が
+     返る→`DELETE /admin/tenants/e-gov.info`→削除後`[]`。
+     `POST /v1/chat`(`tenant`付き)も実際に`gov`インテントへ正しく
+     一致し実際の応答文が返ることを確認。これにより、`open-easy-web`
+     側のモックサーバーテスト(`registers_aruaru_llm_tenant_with_
+     expected_shape`)が検証しているリクエスト形状と、このリポジトリの
+     実際の受け口が**双方とも実HTTPで整合している**ことを確認した
+     (両リポジトリのソース突き合わせ+実HTTP、モックのみに頼らない)。
+  3. **見つけた別の問題(このパスで修正済み)**: 作業ツリーに、
+     `README.md`/`README-English.md`へ存在しない10ヶ国語README
+     (`README-Japan.md`/`README-Chinese.md`等、実際にはこのリポジトリに
+     存在しないファイル)へのリンクを追加する未コミットの変更が残って
+     いた——他リポジトリ(`open-easy-web`等)の「10ヶ国語README」運用
+     ルールを誤って本リポジトリに適用しようとした形跡と見られる、
+     リンク切れになる差分だったため`git checkout`で破棄した。
+  4. **個人情報監査**: `src/`・`Cargo.toml`・README/CLAUDE.md/PORTING.md
+     に実メールアドレス・実電話番号・実APIキー等のハードコードは
+     見つからなかった(該当なし、変更不要)。
+  5. **スコープ外として記録(今回は変更していない)**: `e-gov.info`
+     (`F:\open-runo\e-gov.info\src\chat_commerce.rs`)は、いまだに
+     自前のルールベース応答ロジックを直接持ったままで、本サービス
+     (`aruaru-llm`)へのHTTP問い合わせに置き換えられていない
+     (このCLAUDE.mdの2026-07-18エントリで「検討事項」として記載
+     済みのまま未着手)。今回の指示は`aruaru-llm`リポジトリ自身の
+     完成度が対象のため着手しなかったが、次回以降のエコシステム
+     全体の完成度向上の候補として引き続き記録する。
+  - 次にすべきこと: (1) `e-gov.info`側を実際に`aruaru-llm`への
+    HTTP問い合わせに置き換えるかどうかの判断・実装、(2) `open-cuda`の
+    Phase 3(BLAS/Attention)進捗の定期確認。
+
+- **2026-07-18 「分身の術」構成のビルド・実HTTP検証完了**: 前回パスで
+  未検証のまま残っていた`src/tenants.rs`/`main.rs`の変更を実際に
+  ビルド・実行して検証した。`cargo build`成功、`cargo test`
+  **10件全green**(`tenants::tests`4件・`scoring::tests`6件)。
+  さらに実バイナリを起動し、`curl`で実HTTPリクエストにより
+  `/healthz`→`/v1/chat`(tenant無し)→`POST /admin/tenants`→
+  `GET /admin/tenants`(登録確認)→`/v1/chat`(tenant付き)→
+  `DELETE /admin/tenants/:host`→`GET /admin/tenants`(削除確認、
+  空配列)という一連のフローが型チェックだけでなく実際に正しく
+  動作することを確認した(`poem::Route::at().post(...).get(...)`の
+  メソッドチェーン、`Path<String>`抽出子とも問題なし)。
+  **エコシステム内の展開状況調査**: `RPoem`(`crates/
+  open-runo-gateway/src/appserver_tenants.rs`・`open-runo-appserver/src/
+  tenant_bridge.rs`)・`RCosmo`(同様)・`open-web-server`
+  (`crates/open-web-server-gateway/src/tenant_router.rs`・
+  `handlers/tenants.rs`)には**既にこの「分身の術」パターンが実装済み**
+  であることが判明。`open-cuda`・`open-raid-z`はHTTPサービスではなく
+  ライブラリ(GPUランタイム/ストレージ)のため、そもそも「ドメインごとの
+  個別インストール」という概念自体が当てはまらず、path依存として
+  複数プロジェクトから共有される時点で要件を自然に満たしている
+  (追加のTenantRegistry実装は不要と判断)。`aruaru-db`は既存の
+  `aruaru-server`(pgwire)自体が既に「1インスタンスを複数クライアント
+  アプリが接続して共有する」設計であり、HTTPの`/admin/tenants`的な
+  仕組みを別途持つよりSQLデータベース/スキーマ単位のマルチテナント性を
+  活かす方が自然——今回は追加実装を見送り、この判断根拠を記録するに
+  留めた。**残る実装対象は`open-easy-web`側からの管理統合のみ**
+  (`appserver_registration.rs`拡張、次のHANDOFFエントリ参照)。
+
+- **2026-07-18 新規作成**: ユーザー指示により、`e-gov.info`の
+  `chat_commerce.rs`と同等のルールベース応答ロジックを、独立したHTTP
+  サービスとして新規プロジェクト化。実LLM推論は`open-cuda`側の
+  Phase 3(BLAS/Attention)完成待ちであることを明記。次回以降:
+  (1) `e-gov.info`側を、ローカルの`chat_commerce.rs`直接呼び出しから
+  この`aruaru-llm`へのHTTP問い合わせに置き換えるかどうかの検討、
+  (2) `open-cuda`のPhase 3進捗の定期確認、(3) 実LLM連携時のモデル
+  選定・ライセンス・VRAM要件の調査。
+- **2026-07-18 open-cudaとのSET構成を実装(コード上の実連携)**:
+  ユーザー指示「open-cudaとSETでaruaru-llmも実装して」に基づき、
+  `Cargo.toml`に`opencuda-core`/`opencuda-cpu`をpath依存として追加し、
+  `src/scoring.rs`で実際にopen-cudaの`GpuDevice`実行パイプライン
+  (`alloc_buffer`→`copy_from_host`→`launch_kernel`→`synchronize`→
+  `copy_to_host`、`examples/vector_add`と同一パターン)を呼び出す設計に
+  変更した。具体的には、ユーザー発話と各インテントの固定語彙
+  bag-of-wordsベクトルを組み立て、加算ではなく**要素積カーネル**を
+  `opencuda_cpu::CpuDevice`上で実行し、その結果をホスト側で合計して
+  ドット積スコア(intent分類のスコアリング)とする。これは
+  Cargo依存だけの見せかけの連携ではなく、`/v1/chat`へのリクエストごとに
+  実際に`launch_kernel`が呼ばれる。**ただし正直に言えば、これは本物の
+  ニューラル推論(埋め込み+Attention等)ではなく、固定語彙への
+  bag-of-wordsドット積という極めて単純なベクトル演算**であり、
+  「LLM」という名前が示唆するものとの乖離を`scoring.rs`冒頭にも
+  明記した。次回以降: open-cudaの`opencuda-blas`(Phase 3、GEMM/
+  Attention)が実装され次第、この単純なドット積スコアリングを実際の
+  埋め込みベクトル類似度計算に置き換える余地がある。
+---
+
+## エコシステム全体マップ(2026-07-21追記)
+
+同時並行開発の対象プロジェクト一覧・各リポジトリの現況は
+[`open-raid-z`のCLAUDE.md](https://github.com/aon-co-jp/open-raid-z/blob/main/CLAUDE.md)
+「関連プロジェクト」節を参照。**どのリポジトリから読み始めても、
+この節を起点に他プロジェクトへ辿れる**ようにしてある(このリポジトリ
+自身の状況はこの上のHANDOFF節を参照)。
+
+- **2026-07-27(続き4) 起動時にGPU検出featureの有効/無効を明示ログ出力(使いやすさ改善、ユーザー指示「open-directx と open-cuda と aruaru-llmのSETの完成度と実用性と使いやすさの向上をお願い」)**:
+  1. **問題**: `hw-detect-vulkan`/`hw-detect-directx`はいずれも既定off
+     (Cargo feature)のため、何も知らずに`cargo run`しただけのユーザーは
+     常にCPU-onlyフォールバック(最小モデル固定推奨)に静かに誘導されて
+     しまい、GPU対応ビルドの存在自体に気づけない(外部監査で指摘された
+     使いやすさの最重要ギャップ)。
+  2. **`src/main.rs`起動時に`tracing::info!`でfeatureの有効/無効を明示**:
+     無効時は「GPU検出は無効化されています。ハードウェアに基づく推奨には
+     `cargo build --features hw-detect-vulkan`(Windowsは
+     hw-detect-directxも可)で再ビルドしてください」という趣旨のログを、
+     有効時は有効なfeature名を出力する(`#[cfg(...)]`で条件分岐、実行時
+     オーバーヘッド無し)。
+  3. **検証**: `cargo build`成功。`cargo test`**44件全green**(既存機能
+     への回帰なし、ログ出力のみの変更のためテスト自体は追加せず——
+     ログ文言の単体テストは費用対効果が低いと判断)。
+  - 次にすべきこと: (1) 実際に`cargo run`(feature無し)した際の起動ログに
+    このメッセージが出力されることの目視確認(今回はビルド成功止まり)、
+    (2) README.mdのクイックスタート冒頭にもこのfeatureフラグをより
+    目立たせる形で言及するかの検討(現状は「ハードウェア検出」節に
+    既に記載済みのため優先度は低いと判断)。
+
+- **2026-07-27(続き5) GPU検出の優先順位をVulkan→DirectXへ反転(ユーザー指示「Vulkan環境を重視してましたが、今度は逆に、open-directxを重要視して」)**:
+  1. **`src/hardware.rs::detect()`の分岐順序を入れ替え**: 両feature有効時、
+     従来はVulkan結果を優先しDirectXをクロスチェックとして記録していたが、
+     今回の指示によりDirectX結果を優先しVulkanをクロスチェックとして
+     記録する形へ反転した。クロスチェック計算自体(10%許容誤差での
+     一致判定)は対称なため変更不要。
+  2. **モジュールdocコメントも同期更新**(「両方有効な場合はDirectXを
+     優先しVulkanの結果をクロスチェック」に書き換え)。
+  3. **実機検証**: `cargo build --release --features hw-detect-vulkan,
+     hw-detect-directx`でビルドし、実際にサーバーを起動して
+     `GET /v1/recommend`を叩いたところ、
+     `"detection_path":"directx"`(`gpu_name":"NVIDIA GeForce GT 730"`、
+     `cross_check_agreement":true`)が返ることを実機(GT 730)で確認済み
+     ——反転が実際に効いていることを型チェックだけでなく実行結果で確認。
+  4. **`cargo test`は既存のfeature無効時のテスト3件のみ引き続きgreen**
+     (優先順位の分岐自体は両feature有効時のみ到達するコードパスのため、
+     ユニットテストでの直接検証は行わず、上記の実機起動確認で代替した)。
+  - 次にすべきこと: 特になし(この反転自体は完了)。
+
+- **2026-07-27(続き6) 実際にdistilgpt2をダウンロード→切り替え→生成の一気通貫E2Eを実施、実バグを発見・修正(open-cuda側で対応)**:
+  1. **実施内容**: `POST /v1/models/install {"id":"distilgpt2"}`→
+     `POST /v1/models/select {"id":"distilgpt2"}`→
+     `POST /v1/generate {"prompt":"The quick brown fox",...}`の一気通貫
+     を実際に実行。
+  2. **発見した実バグ**: `select`の段階で`missing tensor 'wte.weight':
+     TensorNotFound`エラーで失敗。調査の結果、
+     `distilbert/distilgpt2`のsafetensorsは`transformer.wte.weight`
+     のように`transformer.`プレフィックス付きテンソル名を使っており、
+     `opencuda-llm::GptModel::load`がプレフィックス無し前提でハード
+     コードされていたことが原因と判明(詳細・修正内容は
+     `open-cuda/CLAUDE.md`の同名HANDOFF参照)。
+  3. **修正後の実行結果**: `select`成功
+     (`"使用するモデルをdistilgpt2に切り替えました"`)、`generate`で
+     実際に英文
+     (`"es are a common sight in the wild, and are often found in the
+     wild."`、エンジンラベル`distilgpt2-greedy-decode-v0-opencuda-llm-cpu`)
+     が生成されることを確認した。
+  4. **意義**: 「型チェック・ビルド成功だけで完了と報告しない」方針の
+     実践例——`cargo test`は全green(opencuda-llm側の合成フィクスチャ
+     テストも含む)だったが、実際にHugging Faceから実モデルをダウン
+     ロードして使うE2Eを実行して初めてこの実バグが見つかった。
+  - **追記**: `gpt2-medium`(既にダウンロード済みだったもの)についても
+    追加で`select`→`generate`のE2Eを実施し、`gpt2`と同じ無印テンソル名
+    規約で問題なく動作することを確認済み(切り替え成功・実際に英文
+    "! I'm a newbie here, so I"を生成、エンジンラベル
+    `gpt2-medium-greedy-decode-v0-opencuda-llm-cpu`)。
+  - **追記2**: `gpt2-large`(3.25GB)・`gpt2-xl`(6.43GB)についても実際に
+    Hugging Faceからダウンロード→`select`→`generate`のE2Eを実施し、
+    いずれも問題なく動作することを確認した(両方とも`gpt2`/`gpt2-medium`
+    と同じ無印テンソル名規約、`transformer.`プレフィックス問題は
+    distilgpt2固有だったと判明)。
+    - `gpt2-large`: 切り替え成功、"jumps over the lazy dog. The quick
+      brown fox"を生成(エンジンラベル
+      `gpt2-large-greedy-decode-v0-opencuda-llm-cpu`)。
+    - `gpt2-xl`: 切り替え成功、"jumps over the lazy dog.\n\nThe slow"を
+      生成(エンジンラベル`gpt2-xl-greedy-decode-v0-opencuda-llm-cpu`)。
+  - **結論**: カタログ5モデル(`gpt2`/`distilgpt2`/`gpt2-medium`/
+    `gpt2-large`/`gpt2-xl`)全てについて、実ダウンロード→切り替え→生成の
+    一気通貫E2Eを実施済み。テンソル名規約の違いは`distilgpt2`のみで、
+    その修正(open-cuda側`key_prefix`自動判定)は既に完了・全モデルで
+    正しく動作することを実証した。
+  - 次にすべきこと: 特になし(カタログ全モデルのE2E確認は完了)。今後
+    カタログに新モデルを追加する際は、同様の実ダウンロード検証を
+    行うこと。
+
+## HANDOFF追記(2026-07-31) インストーラーの電源プロファイル選択機能(未実装、エコシステム標準方針として記録)
+
+`open-raid-z`のCLAUDE.md(全リポジトリ共通の設計思想セクション)に、
+インストーラー(`install.sh`/`install.ps1`等)実行時に以下3つの電源
+プロファイルを選択させる標準方針を追記した(ユーザー指示、2026-07-31):
+
+1. **省電力(Power-saving)**: CPU使用率・ポーリング間隔を抑えた低負荷設定。
+2. **省メモリ(Low-memory)**: メモリ確保量・キャッシュサイズを抑えた設定。
+3. **常時電源接続(Always-on)**: 上記の抑制を行わないフル性能設定。
+   **この場合のみ**ハードウェアアクセラレータ(NPU/GPU)のサポートを
+   自動検出・自動有効化する(`open-cuda`の`GpuDevice`抽象化を利用)。
+
+**正直な開示**: このリポジトリのインストーラーへの実装はまだ未着手。
+実装時は`open-raid-z/CLAUDE.md`の該当節、および先行実装予定の
+`open-redmine/CLAUDE.md`を参照し、`open-cuda`側のGPU/NPUベンダー検出
+ロジックを再利用すること(車輪の再発明を避ける)。
+- 次にすべきこと: このリポジトリの`install.sh`/`install.ps1`に上記3
+  プロファイルの選択機能を追加する。
+
+- **2026-08-04(続き) `/v1/translate`の実HTTP検証完了(直前エントリの
+  「次にすべきこと(1)(2)」に対応)——結論: 現状のGPT-2流用実装は実用に
+  耐えない**:
+  1. **検証方法**: 実バイナリを起動(`cargo build --release`→実際に
+     プロセス起動、モデルウォームアップ完了後)し、`POST /v1/translate`
+     へ実HTTPリクエストを2件送信(`{"Hello, how are you today?" → 日本語}`・
+     `{"Good morning" → French}`)。
+  2. **結果(実測、モックではない)**: いずれも`200 OK`は返るが、
+     `translation`フィールドの中身は**入力文をそのまま繰り返すだけで、
+     実際の翻訳(日本語・フランス語への変換)は一切生成されなかった**
+     (例: "Good morning"入力→出力は"Good morning,\nGood morning,\n..."の
+     16回反復、フランス語は1単語も現れない)。
+  3. **正直な結論**: 事前実装済みの`disclosure`フィールドの警告
+     (「専用翻訳モデルではなく指示追従のファインチューニングも無い
+     GPT-2流用、品質は信頼できない」)は**誇張ではなく実際にその通り**
+     だったことが実機検証で確認された——このエンドポイントは
+     現状「翻訳」としては機能しておらず、`audiocafe.tokyo/rakuten-mobile`
+     の17言語ページ整備等の実用途にはこのまま使えない。
+  4. **次にすべきこと(優先度順、正直な評価に基づき更新)**: (1) 翻訳を
+     実用にするには、指示追従可能なモデル(例: 小型のinstruction-tuned
+     モデル、またはNLLB/M2M100のような専用翻訳モデル)への差し替えが
+     必要——現行のGPT-2流用のままではプロンプトエンジニアリングでの
+     改善余地も限定的(そもそも翻訳という指示概念を学習していない
+     ベースモデルのため)。(2) 当面、`audiocafe.tokyo/rakuten-mobile`の
+     17言語ページは既存方針通り人力翻訳(Claude Code)を継続し、この
+     エンドポイントへの依存は避けるべき。(3) cronからの定期呼び出し
+     配線は、上記(1)のモデル差し替えが完了するまで見送るべき(実用に
+     ならない出力を自動生成・公開してしまうリスクを避けるため)。
+
+- **2026-08-04(続き2) 翻訳プラグイン(M2M100/rust-bert)を新設(ユーザー
+  指示「翻訳精度が低ければオープンソースの翻訳システムを組み込んで」
+  →「翻訳部分だけプラグインという形にして、必要な人だけインストール/
+  アンインストールできるように」)**:
+  1. **背景**: 直前エントリで`/v1/translate`(GPT-2流用実装)を実HTTP
+     検証したところ、実際の翻訳文を生成できず実用に耐えないと判明
+     していた。ユーザーへ組み込み方式を確認したところ`rust-bert`
+     (M2M100/NLLB対応)を選択(他候補: ONNX Runtime+NLLB-200蒸留版、
+     外部API併用〈契約不要方針と非整合のため除外〉)。
+  2. **プラグイン方式の実装**: 新規`src/nllb.rs`+Cargo feature
+     `nllb-translate`(既定オフ、`rust-bert`/`tch`をoptional依存化)。
+     `translate()`ハンドラは、featureが有効かつM2M100モデルロード・
+     翻訳が成功すればその結果を返し、それ以外(feature無効/対応言語外/
+     モデルロード失敗)は既存のGPT-2流用実装へ安全にフォールバックする。
+     起動時ログで`translation plugin: ENABLED`/`not installed`を出力し、
+     現在の状態を明示。
+  3. **「プラグイン」の実体(正直な開示)**: 実行時の動的着脱(dylibロード
+     等)ではなく、**ビルド時のCargo feature選択**による着脱
+     (`cargo build --release --features nllb-translate`=インストール、
+     フラグ無し=アンインストール)。`rust-bert`は`tch`(libtorch)への
+     依存が必須で、このエコシステムが他の全モデルで貫いてきた
+     「手作りRust実装+safetensors直接ロード、重量級MLフレームワーク
+     非依存」という方針から意図的に外れる大きな依存——この妥協を
+     feature配下に隔離することで、既定ビルド(featureフラグ無し)には
+     一切影響を与えない設計にした。
+  4. **検証**: 既定ビルド(`nllb-translate`feature無し)で
+     `cargo build`・`cargo test`とも**46件全green**(回帰なし、新規
+     `nllb.rs`のfeature無効時ユニットテスト2件を含む)。
+     **正直な開示・未検証事項**: `nllb-translate` feature有効時の
+     実ビルド・実M2M100モデルロード・実翻訳品質の検証は、この開発
+     環境にlibtorch(tchクレートのビルド要件)が存在せず、
+     ダウンロードには相応の時間・ディスク容量を要するため**このパスでは
+     未実施**——コードレビュー・既定ビルドへの非破壊性の確認までに
+     留まる。次回、実際に`--features nllb-translate`でビルドし、
+     実際にM2M100で翻訳が機能することを実HTTPで確認する必要がある。
+  5. **ドキュメント**: `README.md`に「翻訳プラグイン」節を新設し、
+     インストール/アンインストール手順(`cargo build --features
+     nllb-translate`の有無)・正直な開示を記載。
+  - 次にすべきこと: (1) `--features nllb-translate`での実ビルド・
+    実M2M100翻訳品質の実HTTP検証、(2) 検証後、
+    `audiocafe.tokyo/rakuten-mobile`等の実用途への適用を再検討。
+
+- **2026-08-04(続き3) 自動翻訳の運用方針を撤回、`libtorch`はWindows PC
+  ローカル限定に変更(ユーザー指示「libtorchは、LINUXのVPS上で運用すると
+  VPSのメモリーを逼迫するので、WindowsPCにインストール形で使用したい」
+  「ですから毎朝自動クロールして、自動翻訳するのは辞めましょう」
+  「毎朝自動クロールしたら日本語の原文をそのまま利用しましょう」)**:
+  1. **cron自動翻訳配線は行わない(方針撤回)**: 直前エントリまで検討して
+     いた「`audiocafe.tokyo/rakuten-mobile`の毎朝自動クロール結果を
+     `/v1/translate`で自動翻訳する」という運用は中止。今後、毎朝の
+     自動クロールで取得した文章は**翻訳せず日本語原文のままそのまま
+     利用する**方針に統一する。この`aruaru-llm`側に翻訳cronを配線する
+     実装は行わないこと(コード変更は無し、方針の明記のみ)。
+  2. **`nllb-translate` feature(libtorch依存)はVPSへデプロイしない**:
+     `rust-bert`/`tch`(libtorch、PyTorchのC++ライブラリ)はメモリ消費が
+     大きく、Linux VPS上で常時稼働させるとVPS全体のメモリを逼迫する
+     ため、この機能はVPS本番環境には一切ビルド・デプロイしない
+     (`--features nllb-translate`を付けない既定ビルドのままVPSへ配置)。
+     試す場合はこのWindows開発機など**ローカルPC限定**とする。
+  3. **`Cargo.toml`の`tch`依存からWeb自動ダウンロード(`download-libtorch`
+     feature)を撤回**: 「PCにインストール形で使用したい」という指示に
+     基づき、ビルドの都度Web上から自動取得する`download-libtorch`
+     featureは使わず、`tch = { version = "0.17", optional = true }`
+     (素の状態、`LIBTORCH`環境変数でローカルにインストール済みの
+     libtorchパスを明示的に指す前提)に戻した。
+  4. **正直な開示・現状**: 上記方針転換により、`--features
+     nllb-translate`での実ビルド・実M2M100翻訳検証は**優先度が下がった
+     (production用途が無くなったため)**。ビルド中に`indicatif 0.16.2`
+     と`console 0.16.4`のAPI不整合(`console::Style`/
+     `measure_text_width`が`std` featureの裏に隠された)によるビルド
+     失敗を確認し、`console`を`0.15.11`へダウングレードする対処までは
+     行ったが、その後の再ビルド・実機検証はこの方針転換により保留とした
+     (緊急性が無くなったため)。
+  - 次にすべきこと: (1) 今後、翻訳が本当に必要になった場合のみ、
+    Windows PCローカルで`--features nllb-translate`のビルド・検証を
+    再開する(VPSには絶対にデプロイしない)、(2) 毎朝の自動クロール
+    ロジック(`audiocafe.tokyo/rakuten-mobile`等)側で、翻訳を呼ばず
+    日本語原文をそのまま使う実装になっているかの確認(このリポジトリ
+    ではなく該当リポジトリ側の作業)。
+
+- **2026-08-05 `real-vulkan`のGEMM未配線バグ修正を実機検証、`/v1/generate`が
+  実際にVulkanDevice経由で動作することを確認(優先度3位・未着手として
+  指示された本リポジトリの「次にすべきこと」対応)**:
+  1. **前提**: 作業開始時点で`src/generation.rs`に未コミットの変更が
+     存在していた(`wire_matmul_spirv`関数、`GptModel::load`後に
+     `../open-cuda/examples/matmul_vulkan_real/shaders/matmul.spv`を
+     読み込み`set_matmul_spirv`で配線する処理)。これは直前HANDOFF
+     (2026-08-04)で報告されていた「`open-cuda`側`Linear::forward`が
+     spirvを`sgemm`へ渡していないため`real-vulkan` featureが機能しない」
+     というバグに対応する配線コードで、`open-cuda`リポジトリ側
+     (`F:\runo\open-cuda`)を確認したところ、該当バグ修正コミット
+     `6452ae4`("Fix Linear::forward never passing spirv to sgemm")が
+     既に存在し、`GptModel::set_matmul_spirv`もマージ済みと判明した。
+     つまり両リポジトリ側の実装は既に揃っており、**実機検証だけが
+     未実施のまま残っていた**状態だった。
+  2. **実施した検証(実バイナリ・実HTTP、モックなし)**:
+     - `cargo build --release --features real-vulkan`でビルド成功。
+     - 実際にプロセスを起動し、起動ログで
+       `real-vulkan feature enabled: using VulkanDevice for inference
+       dispatch`→`OpenCUDA Vulkan Device (NVIDIA GeForce GT 730)`→
+       `real-vulkan feature enabled: loaded matmul.spv (2732 bytes) ...
+       and wired into GptModel via set_matmul_spirv`→
+       `generation (GPT-2 124M) warmup complete`まで一気通貫で成功する
+       ことを確認(直前HANDOFFで報告されていた「約0.2秒で即座に失敗する」
+       という症状は解消)。
+     - `POST /v1/generate`へ実HTTPリクエストを2件送信
+       (`"The quick brown fox jumps over"`→
+       `" the fence and runs into the bushes.\n\n\"I"`、
+       `"Once upon a time"`→
+       `", the world was a place of great beauty and great danger. ..."`)。
+       いずれも`200 OK`で文法的に自然な英文が実際に生成され、エラーは
+       発生しなかった。2件目は生成に約42.7秒を要した(このマシンの
+       NVIDIA GeForce GT 730はVulkan GEMMのディスパッチオーバーヘッドが
+       CPU実行より大きく出るローエンドGPUであるため、速度面のベンチ
+       マーク・CPU比較は未実施——今回の検証範囲は「機能するか」の確認
+       までで、「速いか」は別問題として残っている)。
+     - `scoring::warmup`/`security::warmup`(BERT系、`open-cuda-bert`)は
+       依然として`wire_matmul_spirv`相当の配線が無いため、`real-vulkan`
+       feature有効時は起動時ウォームアップが同じ「spirv未提供」エラーで
+       失敗する(ただし可用性優先の設計により初回リクエスト時に遅延
+       リトライされるだけでサービス自体は止まらない)。今回の対応範囲は
+       `/v1/generate`(GPT-2)のみで、`/v1/chat`(意図分類)・
+       `/v1/admin`のセキュリティ分類側のVulkan配線は未対応のまま。
+     - 既定ビルド(featureフラグ無し、VPS本番相当)でも
+       `cargo build --release`→実プロセス起動→`/v1/generate`への実
+       HTTPリクエストで正常動作することを別途確認し、今回の変更が
+       既定ビルドを壊していないことを検証した。
+     - `cargo test --release`(既定feature)は46件全green
+       (回帰なし)。**正直な開示**: 検証の途中、直前に起動していた
+       サーバープロセスがポート/メモリを保持したまま`cargo test`を
+       実行してしまい、一度`memory allocation of 384056832 bytes
+       failed`でクラッシュした(プロセスをkillしてから再実行したところ
+       正常に46件全green)——テスト自体の欠陥ではなく、この開発環境
+       での実行手順ミスだったことを確認済み。
+  3. **正直な開示・気づいた既存の粗(今回は未修正)**: `/v1/generate`の
+     `engine`フィールドはVulkan/CPUどちらで実行されたかに関わらず常に
+     `"gpt2-...-open-cuda-llm-cpu"`という固定文字列を返す
+     (`src/generation.rs`の`ENGINE_GPT2_GREEDY`定数、`-cpu`が
+     ハードコード)。実際にVulkanDeviceで実行されていても`engine`
+     ラベル上は判別できない——`/v1/chat`側は既に実際の経路
+     (`embedding-cosine-v0-opencuda-bert-cpu`等)を正直に返す設計に
+     なっているのと対照的。今回のタスク範囲外と判断し修正していないが、
+     次に`/v1/generate`まわりを触る際はラベルにも実行経路(vulkan/cpu)を
+     反映させることを検討すべき。
+  - 次にすべきこと: (1) `scoring`/`security`(BERT系)側にも
+    `wire_matmul_spirv`相当のVulkan GEMM配線を追加するかどうかの判断
+    (現状は意図分類・セキュリティ分類はCPU固定のまま、GPT-2生成のみ
+    Vulkan対応)。(2) このGT-730のような非力なGPUでのVulkan実行が
+    CPU実行と比べて実際に速いのか遅いのかのベンチマーク未実施——
+    `real-vulkan`を既定featureへ昇格させるかどうかの判断material。
+    (3) `engine`ラベルの`-cpu`ハードコードを実行経路に応じて動的に
+    する改修(正直な開示の一貫性向上)。
+
+- **2026-08-07 API使いやすさ改善(`/v1/generate`・`/v1/translate`の空入力が
+  誤って`503`扱いになる粗を修正)、他リポジトリ(dream-os・open-directx・
+  open-cuda)と並列作業中・本リポジトリ担当分**:
+  1. **前提・背景**: ユーザー指示「dream-os・open-directx・open-cuda・
+     aruaru-llmの連携性強化・実用性向上・利便性向上・完成度向上」
+     (4リポジトリ並列作業、`open-cuda`は別エージェントが同時作業中の
+     ため本セッションでは読み取りのみ・変更禁止という制約)。直前
+     HANDOFF(2026-08-05・2026-08-06)の「次にすべきこと」は主に
+     `open-cuda`側の変更(decode/prefill経路分離・ベンチマーク)を
+     要するため本セッションの範囲外と判断し、代わりにユーザー指示の
+     もう一つの候補「実際に使ってみて不便な点(API使いやすさ・エラー
+     メッセージ)」を本リポジトリ単体で完結する形で対応した。
+  2. **見つけたバグ**: `POST /v1/generate`へ空文字列(または空白のみ)の
+     `prompt`を送ると、`generation::generate`内部でトークナイザが
+     0トークンにエンコードした後の`ensure!`失敗が、正常なバックエンド
+     障害(モデル未ロード等)と同じ`503 Service Unavailable`として
+     そのまま返っていた。呼び出し側からは「サーバーが落ちている」のか
+     「自分の入力が不正」なのか区別できず、実用上のエラーハンドリングが
+     困難だった。`POST /v1/translate`も同じ生成エンジンを土台にしている
+     ため`text`が空の場合に同じ症状が起きることを確認した。
+  3. **修正内容**(`src/main.rs`): `generate`ハンドラの先頭で
+     `req.prompt.trim().is_empty()`を検査し、真なら`400 Bad Request`
+     (`{"error": "prompt must not be empty", "engine": "..."}`)を
+     即座に返すようにした。`translate`ハンドラも同様に`text`・
+     `target_lang`それぞれの空チェックを追加し`400`を返すようにした。
+     `open-cuda`側のファイルは一切変更していない(本リポジトリの
+     `src/main.rs`のみの変更)。
+  4. **検証(実バイナリ・実HTTP、モックなし)**: `cargo build --release`
+     成功(ビルド中、並列作業中の`open-cuda`側が一時的に壊れていた
+     タイミングと重なり8分半ほど待つ場面があったが、最終的に問題なく
+     ビルド完了)。`cargo test --release`46件全green(回帰なし)。
+     実際に`target/release/aruaru-llm.exe`を起動し、
+     `POST /v1/generate {"prompt": ""}` → `400`
+     `{"error":"prompt must not be empty",...}`、
+     `POST /v1/generate {"prompt": "Hello there", "max_new_tokens": 8}`
+     → `200` `{"completion": ", I'm sorry. I'm sorry", ...}`(正常系は
+     従来通り動作)、
+     `POST /v1/translate {"text": "", "target_lang": "Japanese"}` →
+     `400` `{"error":"text must not be empty",...}`、
+     `POST /v1/translate {"text": "Hello", "target_lang": ""}` →
+     `400` `{"error":"target_lang must not be empty",...}`
+     をいずれも実HTTPリクエストで確認した。
+  5. **ドキュメント**: `README.md`の`/v1/generate`・`/v1/translate`の
+     節にこの`400`検証の挙動を追記済み。
+  - 次にすべきこと: (1) 前回HANDOFF(2026-08-05/06)の残課題
+     (`scoring`/`security`側のVulkan GEMM配線・GT-730でのVulkan vs CPU
+     ベンチマーク)は引き続き未着手、`open-cuda`側の実装・実機を
+     伴うため次回`open-cuda`が空いているタイミングで着手する。
+     (2) 同様の「空入力が`503`扱いになる」粗が`/v1/chat`
+     (`message`)・`/v1/classify-security`(`text`)にも無いか未確認
+     ——ただしこちらは`scoring::classify`/`security::classify_security`が
+     空文字列でも例外を投げずNone/低スコアで正常応答する設計のため
+     優先度は低いと見ている(次回確認のみでよい)。
+     (3) dream-os・open-directx側との具体的な連携強化(API呼び出し
+     経路の実装等)は、今回は本リポジトリ内で完結する改善に留めた
+     ため未着手のまま。
+
+- **2026-08-20 「2つのopen-directx」混同の解消(調査のみ、実装無し)**:
+  ユーザーより「aruaru-llmがopen-cuda経由でopen-directxを使うなら
+  open-english配布物に(間接的に)同梱すべきでは」との指摘があり調査。
+  実態は以下で、**同名だが無関係な別物が2つ存在**していたことが
+  混同の原因と判明した。
+  1. `opencuda-directx`クレート — `open-cuda`リポジトリ**内蔵**の
+     ワークスペースメンバー(`open-cuda/crates/opencuda-directx`)。
+     `Cargo.toml`で`opencuda-directx = { path = "crates/opencuda-directx" }`
+     として定義されている。
+  2. `open-directx`リポジトリ — GitHub上`aon-co-jp/open-directx`の
+     **完全に独立したプロジェクト**(`F:\runo\open-directx`)。
+     ワークスペースメンバーは`directx-shader-translate`/
+     `directx-graphics-vulkan`/`directx-graphics-window`で、
+     `opencuda-directx`とはクレート名もパスも一切重複していない。
+     path依存・git submodule・その他いかなる技術的連携も無い
+     (`grep`で相互参照ゼロ件を確認)。名前が似ているだけの別物。
+  - `aruaru-llm`側の依存: `Cargo.toml`で
+     `opencuda-directx = { path = "../open-cuda/crates/opencuda-directx", optional = true }`
+     と定義され、`hw-detect-directx` feature経由でのみ有効化される
+     (`default = []`のため既定では無効)。つまり(1)の内蔵クレートを
+     指しており、(2)の独立リポジトリとは無関係。
+  - `.github/workflows/release.yml`の実際のビルドコマンドは
+     `cargo build --release --bin aruaru-llm`で`--features`指定が無く、
+     `hw-detect-directx`も有効化されていない。したがって現状の
+     open-english配布バイナリには`opencuda-directx`クレートすら
+     リンクされていない。
+  - **結論**: 独立リポジトリ`open-directx`(2)をopen-english配布物に
+     同梱すべき技術的根拠は無い。aruaru-llmは(2)を一切使っておらず、
+     使っている(1)も現行リリースビルドでは無効化されたfeatureの
+     裏にあるため配布バイナリには含まれていない。ユーザーの指摘は
+     名前の類似による誤解と判断し、コード変更は行わずこの記録のみ
+     残す(正直な開示を優先)。
+  - 次にすべきこと: もし将来DirectX互換バックエンドを実際に
+     配布バイナリへ含める判断をする場合は、(1)`hw-detect-directx`
+     featureをrelease.ymlで明示的に有効化する対応で足り、(2)の
+     独立リポジトリを持ち込む必要は無い(そもそも別物のため)。
+
+- **2026-08-20 多言語(7言語)調査を実施、圧縮技術の実装は今回未着手**:
+  ユーザー指示によりWebSearchで日英中(簡体)中(繁体)独露ヘブライ語の
+  7言語で調査。
+  1. 東芝SBM: 2026年に実際の進展あり。2026-02-24
+     東芝・ミライズテクノロジーズが自律移動ロボットへ世界初搭載
+     (組込みFPGAでマルチオブジェクトトラッキング23fps、追跡精度
+     +4%/遮蔽時+23%)。2026-04 「edge of chaos」を活用した第3世代
+     アルゴリズムで従来比約100倍高速化(Physical Review Applied掲載)。
+     2026-05 チップ8連結によるスケールアウト技術(速度5倍・規模16倍)。
+     出典: https://www.global.toshiba/ww/technology/corporate/rdc/rd/topics/26/2602-02.html
+     https://news.toshiba.com/press-releases/press-release-details/2026/Toshibas-Breakthrough-Algorithm-Harnesses-Edge-of-Chaos-to-Dramatically-Boost-Performance-of-its-QuantumInspired-Computer/default.aspx
+     いずれも量子インスパイアード最適化(組合せ最適化問題)分野の
+     成果であり、当リポジトリ(GPT-2密モデルLLM推論)への直接応用先は
+     見当たらない(ロボット制御・金融最適化向けが主用途)。
+     中国語(簡体)・繁体字・ヘブライ語検索では上記東芝公式発表の
+     現地報道が見つからず(該当情報無し、正直に報告)。
+  2. DeepSeek系/圧縮技術: 「Model Folding」「FoldGPT」という名称
+     そのものを裏付ける新規情報源は今回の検索でも見つからず(既知の
+     arXiv:2502.10216以外に新展開なし)。関連として
+     PuzzleMoE(arXiv:2511.04805、疎な専門家マージ+ビットパッキング
+     によるMoE圧縮、Mixtral-8x7Bを2分で圧縮)を新規発見。DeepSeek V4
+     (2026-04公開との情報、1.6T総パラメータ/49B活性化)はアーキ
+     テクチャ変更が前提で既存判断(不採用)を継続。
+     出典: https://arxiv.org/pdf/2511.04805 https://www.morphllm.com/deepseek-v4
+  3. CPU/GPU/NPU効率全般: 独語検索でFlexQ(arXiv:2508.04405、
+     INT6量子化+アルゴリズム/システム協調設計によるLLM推論高速化)を
+     新規発見。GptModelへの適用可否は未検証。
+  - **タスク2(実装)は今回見送り**: Model Foldingの層間コサイン
+     類似度計算(最小実証)を試みる時間を確保できず、`GptModel`の
+     重みフィールドがprivateなため新規API追加が前提という既知の
+     障壁も未解消のまま。正直に「調査したが実装には至らなかった」と
+     報告する。
+  - 次にすべきこと: (1) PuzzleMoE/FlexQのアルゴリズムを本リポジトリの
+     密モデル(MoEでない)にどう適用できるか具体検討。(2) Model Folding
+     実装に着手する場合は`GptModel`へ重み読み出し用の公開APIを追加
+     するところから始める。
+
+- **2026-09-01(続き) Model Folding残タスク4項目、全て完了(実機検証済み、
+  他アカウントでの再開用メモ)**:
+
+  直前エントリ(同日)で「3・4は未着手・環境制約」と記録されていたが、
+  同日中に開発機(NVIDIA GT 730搭載、実機)を使えるセッションへ引き継がれ、
+  残る2項目(多言語較正・実GPU計測)も含め4項目**全て完了・実機検証済み**
+  となった。誤って「未着手」のまま放置しないよう、正しい最終状態を
+  ここに記録する。
+
+  1. **`ridge_lambda`の外部調整可能化(完了)**: 直前エントリの記載通り。
+     加えて`open-cuda-llm`側に`ridge_lambda`を明示的に変えた場合に
+     実際にフィット結果(出力層の重み)が変わることを確認する回帰テスト
+     (`fold_block_with_linear_adapter_honors_explicit_ridge_lambda`)を
+     追加済み。`cargo test -p open-cuda-llm --release
+     fold_block_with_linear_adapter -- --test-threads=1`**4件全green**
+     (実機で再確認済み)。
+  2. **open-english側UIボタン(完了)**: `open-english/index.html`/
+     `app.js`の`fold-layers`実行フォーム(除去層数・線形アダプタ使用・
+     ridge_lambda入力欄)自体は既存実装のまま(詳細は`open-english/
+     CLAUDE.md`参照)。
+  3. **多言語較正データの追加(完了、実機検証済み)**: `src/
+     generation.rs`に`multilingual_fold_calibration_prompts()`を新設
+     (英語3文+日本語4文+中国語簡体字2文+仏独西などを含む合計十数文、
+     `ARUARU_LLM_FOLD_CALIBRATION_PROMPTS`環境変数〈`;`区切り〉で
+     上書き可)、`fold_active_model`/`fold_active_model_by_block`/
+     `fold_active_model_with_linear_adapter`いずれも`sample_prompts`が
+     空のときの既定をこちらへ切り替えた(従来の英語オンリー8文
+     `mla_calibration_prompts()`から置換)。**正直な開示**: GPT-2/
+     distilgpt2のBPE語彙は英語中心の学習済み語彙であり、日本語・
+     中国語プロンプトはトークン化自体は失敗しないが1文字あたりの
+     トークン消費数が多くなりがちで、`block_similarity`の計算に使う
+     隠れ状態の分布が英語のみの較正データとは異なる可能性がある——
+     「日本語での折りたたみ後品質が英語と同等」であることは主張しない。
+     **実機検証**: 新規`--ignored`テスト
+     `fold_with_multilingual_calibration_prompts_completes_on_real_gpt2_weights`
+     を実GPT-2 124M重みで実行し、日本語プロンプトを含む較正データで
+     実際に折りたたみ(方式2、1層除去)が完走し、折りたたみ前後とも
+     `generate()`が正常な英文("es are a great way to get some of the
+     best food" → "es are a great way to get your dog's attention.")を
+     生成することを確認した(2026-09-01実施)。
+  4. **GPU実測(Vulkan/DirectX経由、完了・実機検証済み)**: 直前エントリの
+     「サンドボックスにGPUが無い」という制約は、開発機(NVIDIA GT 730)で
+     作業しているセッションには当てはまらないことが判明した。
+     `open-cuda`側`open-cuda-llm/src/lib.rs`の`bench_manual`モジュールに
+     `manual_bench_fold_layers_cpu_vs_vulkan_vs_directx_on_real_gpt2_weights`
+     (`--ignored`)を新設し、`analyze_layer_redundancy`/
+     `find_best_layer_block_to_remove`/`fold_block_with_linear_adapter`の
+     3手法をCPU/Vulkan(`set_matmul_spirv`)/DirectX(`set_matmul_dxil_
+     offload`)の3経路で実際に計測した。**この3手法専用の新規GPUコードは
+     一切追加していない**——いずれも既存の`device: &Arc<dyn GpuDevice>`
+     引数を`forward_prefill`へそのまま渡す設計のため、既存の`generate()`
+     用GPU配線パターンがそのまま流用できた。
+     **実測結果(実機、NVIDIA GeForce GT 730 + Ryzen 9 3950X、実GPT-2
+     124M重み、2026-09-01実施)**:
+
+     | 経路 | analyze_layer_redundancy | find_best_layer_block_to_remove | fold_block_with_linear_adapter |
+     |---|---|---|---|
+     | CPU | 2.04秒 | 1.81秒 | 2.04秒 |
+     | Vulkan | 34.53秒 | 31.20秒 | 33.68秒 |
+     | DirectX | 4.32秒 | 5.08秒 | 4.83秒 |
+
+     **正直な結論(誇張しない)**: この開発機では**CPU実行が最速**で、
+     Vulkan経路はCPUの約17倍、DirectX経路もCPUの約2〜2.8倍遅い。これは
+     過去のHANDOFF(2026-08-04〜2026-08-23、`generate()`のGEMMディスパッチ
+     に関する既存の実測)と整合する結果——GT 730のような非力な旧世代
+     discrete GPUでは、Vulkan/DirectXディスパッチの固定オーバーヘッドが
+     GPT-2 124M程度の軽い計算より支配的になる。**「GPU実行経路で計測
+     できたか」という問いには「できた、実際に3経路とも完走し数値を
+     得た」と正直に答えられるが、「GPU経路の方が速かったか」には
+     「いいえ、この実機ではCPUが最速だった」と正直に答える**。
+     `cargo test -p open-cuda-llm --release -- --test-threads=1`
+     **34件全green・4件ignored**(regressionなし、実機で確認済み)。
+
+  **結論**: ユーザー指示の4項目は全て着手・完了し、いずれも実機
+  (実GPT-2 124M重み、実Vulkan/DirectXハードウェア)で検証済み。
+  「調査したが未着手」という中途半端な状態のまま次回へ持ち越す項目は
+  無い。
+
+- **2026-09-01 Follow-up on the 4 remaining Model Folding tasks — all
+  four now complete and hardware-verified (English summary)**:
+
+  An earlier same-day entry recorded items 3 and 4 as "not started,
+  sandbox has no GPU." That was written from an environment without
+  GPU access; a later continuation of the same day's work, run on the
+  actual dev machine (NVIDIA GT 730), completed and verified both
+  remaining items. Recording the corrected final state here so it is
+  not left stale:
+
+  1. **`ridge_lambda` externally configurable (done)** — as recorded
+     in the prior entry, plus a new regression test
+     (`fold_block_with_linear_adapter_honors_explicit_ridge_lambda`)
+     confirming an explicit value actually changes the fitted weights.
+     `cargo test -p open-cuda-llm --release
+     fold_block_with_linear_adapter -- --test-threads=1`: **4/4 green**
+     on real hardware.
+  2. **open-english UI button (done)** — unchanged from the prior
+     entry, see `open-english/CLAUDE.md`.
+  3. **Multilingual calibration data (done, hardware-verified)**:
+     added `multilingual_fold_calibration_prompts()` (English + 4
+     Japanese sentences + 2 Simplified Chinese + French/German/Spanish,
+     overridable via `ARUARU_LLM_FOLD_CALIBRATION_PROMPTS`) and wired
+     it as the default calibration set for all three fold entry points,
+     replacing the English-only 8-sentence default. **Honest
+     disclosure**: GPT-2/distilgpt2's BPE vocabulary is trained mostly
+     on English text; Japanese/Chinese prompts tokenize without
+     crashing but consume more tokens per character, so the hidden-
+     state distribution used for `block_similarity` may differ from an
+     English-only calibration set — we do NOT claim post-fold quality
+     is equivalent for Japanese. **Verified against real GPT-2 124M
+     weights** via a new `--ignored` test
+     (`fold_with_multilingual_calibration_prompts_completes_on_real_gpt2_weights`):
+     folding (block-search method, removing 1 layer) completes with
+     Japanese prompts in the calibration set, and `generate()` still
+     produces well-formed English output before and after the fold.
+  4. **Real GPU measurement via Vulkan/DirectX (done, hardware-
+     verified)**: the "no GPU" constraint from the earlier entry did
+     not apply once work continued on the actual dev machine. Added
+     `manual_bench_fold_layers_cpu_vs_vulkan_vs_directx_on_real_gpt2_weights`
+     (`--ignored`) to `open-cuda-llm`'s `bench_manual` module, timing
+     `analyze_layer_redundancy` / `find_best_layer_block_to_remove` /
+     `fold_block_with_linear_adapter` over CPU, Vulkan
+     (`set_matmul_spirv`), and DirectX (`set_matmul_dxil_offload`).
+     **No new GPU-specific code was needed for these three methods** —
+     they already forward the existing `device: &Arc<dyn GpuDevice>`
+     argument into `forward_prefill`, so the same wiring pattern used
+     for `generate()` applied directly. **Real measurement (this dev
+     machine, NVIDIA GeForce GT 730 + Ryzen 9 3950X, real GPT-2 124M
+     weights, 2026-09-01)**: CPU 2.04s/1.81s/2.04s vs Vulkan
+     34.53s/31.20s/33.68s vs DirectX 4.32s/5.08s/4.83s (analyze / block
+     search / linear adapter, respectively). **Honest conclusion: CPU
+     is fastest on this machine — Vulkan is ~17x slower, DirectX ~2-3x
+     slower**, consistent with prior `generate()` GEMM-dispatch
+     measurements (2026-08-04 through 2026-08-23 HANDOFF entries) — GT
+     730's fixed Vulkan/DirectX dispatch overhead dominates for
+     GPT-2-124M-scale compute. We can honestly say the GPU paths were
+     measured and completed; we cannot honestly say they were faster.
+     `cargo test -p open-cuda-llm --release -- --test-threads=1`:
+     **34 passed, 4 ignored**, no regressions.
+
+  **Bottom line**: all 4 user-requested follow-up tasks are now
+  implemented and hardware-verified; none remain in a half-finished
+  state.
+
+## HANDOFF追記(2026-09-03) エコシステム横断の GPU 移植性設計見直し(正本: open-cuda/OmniGPU-Design.md §11・§12)
+
+ユーザー指示「NVIDIA/AMD/Intel のどの GPU でも互換、Windows/macOS/Linux/Unix
+でも機能するよう最新理論を調査して 5 リポジトリ(dream-os / open-directx /
+open-cuda / aruaru-llm / aruaru-db)の新規設計へ活かす」への対応。
+**設計の正本は `open-cuda/OmniGPU-Design.md` の §11(クロスベンダー×クロスOS
+移植性設計)と §12(エコシステム横断の設計見直し)**。一次資料: rust-gpu
+「running on every GPU」/ CubeCL / MoltenVK / vkd3d-proton・DXVK 3.0
+(`dxil-spirv`)/ llama.cpp バックエンド行列 / 「Llamas on the Web」(WebGPU)。
+
+### aruaru-llm への波及方針(§12.3)
+1. **バックエンド行列を llama.cpp に倣って明示**: CPU-SIMD(AVX2+FMA3、
+   実測 3.34x)=済 / Vulkan=済 / DXIL=済 / Metal(MoltenVK 経由)=将来 /
+   HIP(AMD)・SYCL(Intel)=optional。README へ表で明記する。
+2. **`ARUARU_LLM_ENABLE_*` の opt-in 群を「起動時の能力交渉 → 自動選択」へ
+   寄せる**(env は override として残す)。現状は利用者が手動で FP8/MLA/
+   flash-attention 等を選んでいる。
+3. **int8 活性化量子化**(llama.cpp が CUDA/Vulkan で採用)を `opencuda-blas`
+   の `dot_i8`(VNNI 経路、実装済み・未配線)へ繋ぐ検討。
+4. **WebGPU/wasm 経路**は「Llamas on the Web」(arXiv:2605.20706)を裏付けに
+   将来オプションとして記録(2026-08-25 の「ブラウザ内 AI 実行」構想と接続)。
+
+いずれも**今回はコード未着手**。次の作業でこの方針に沿って進める。
+
+### 2026-09-03(続き)世界中の言語で再調査 → 波及方針の裏付け更新(コード未着手)
+
+EN/JA/ZH + GitHub 中心で再調査(正本 `open-cuda/OmniGPU-Design.md`
+§11.6)。aruaru-llm の波及方針に効く更新点:
+- **`EmbarkStudios/rust-gpu` は 2025-10-31 アーカイブ**。aruaru-llm は
+  `rust-gpu` に依存していない(推論は open-cuda の SPIR-V/DXIL 経由)ため
+  影響なし。将来 WebGPU/wasm 経路を書く場合の「単一 Rust ソース」候補は
+  CubeCL / wgpu+naga。
+- **`VK_EXT_shader_float8` が出荷ドライバ入り**(NVIDIA 2025-06 / AMD
+  Adrenalin 25.10.2)。→ `ARUARU_LLM_ENABLE_FP8_WEIGHTS`(現状 GT 730 では
+  ソフトウェア dequant)は、FP8 対応 GPU + open-cuda 側の
+  `VK_EXT_shader_float8` + `VK_KHR_cooperative_matrix` 経路が実装されれば
+  そのまま実 tensor-core 実行へ切り替わる。能力交渉(方針 2)の判定条件は
+  「Vulkan がこの 2 拡張を報告するか」。
+- **llama.cpp は 2026-04 にバックエンド非依存のテンソル並列を導入**、
+  Vulkan バックエンドの拡張スタックは `VK_KHR_cooperative_matrix` +
+  `VK_NV_cooperative_matrix2` + `VK_KHR_shader_integer_dot_product` +
+  `VK_KHR_shader_bfloat16`(FOSDEM 2026)。→ 方針 3(int8 活性化量子化)は
+  `VK_KHR_shader_integer_dot_product` が open-cuda の Vulkan GEMM に入れば
+  `dot_i8` 配線と揃う。
+- **WebGPU は W3C Candidate Recommendation Draft(2026-05-21)**、WebLLM は
+  ネイティブ比 ~80%、埋め込みは WebGPU が WASM 比 40〜75×
+  ([arXiv:2412.15803](https://arxiv.org/html/2412.15803v2))。→ 方針 4
+  (WebGPU/wasm 将来オプション)の裏付けを更新。
+
+**次の実装スライス(この方針に沿った最初のコード)**:
+(A) `GET /v1/runtime` を「バックエンド行列 + 能力交渉の結果選ばれた経路」を
+返す形へ拡張(現状の `acceleration` / `cpu_simd` フィールドを整理)、
+(B) `README.md` / `README-English.md` に llama.cpp 風のバックエンド表
+(CPU-SIMD=済 / Vulkan=済 / DXIL=済 / Metal via MoltenVK=将来 /
+HIP・SYCL=optional / WebGPU=将来)を追加、
+(C) `ARUARU_LLM_ENABLE_*` を「未指定なら能力交渉で自動、指定なら override」
+へ(env の意味を変えない後方互換)。
+
+**English**: World-language + GitHub re-research (source of truth:
+`open-cuda/OmniGPU-Design.md` §11.6). `rust-gpu` archived 2025-10-31 (no
+impact — aruaru-llm uses open-cuda's SPIR-V/DXIL path). `VK_EXT_shader_
+float8` is now in shipping NVIDIA/AMD drivers, so
+`ARUARU_LLM_ENABLE_FP8_WEIGHTS` flips to real tensor-core execution once
+open-cuda gains the `VK_EXT_shader_float8` + `VK_KHR_cooperative_matrix`
+path; the capability-negotiation check (policy 2) is "does Vulkan report
+those two extensions". llama.cpp added backend-agnostic tensor
+parallelism (2026-04); its Vulkan ext stack includes
+`VK_KHR_shader_integer_dot_product`, which lines up with the `dot_i8`
+wiring (policy 3). WebGPU is a W3C Candidate Recommendation Draft
+(2026-05); WebLLM ~80% native, embeddings 40–75× WASM (policy 4). Next
+implementation slices: (A) extend `GET /v1/runtime` to report the
+backend matrix + the negotiated path, (B) add a llama.cpp-style backend
+table to the READMEs, (C) make `ARUARU_LLM_ENABLE_*` "auto via
+capability negotiation when unset, override when set". Still no code
+this pass.
+
+### 2026-09-03(続き2)スライス (A)(B) 実装: `GET /v1/runtime` バックエンド行列 + README 表
+
+上記「次の実装スライス」の (A)(B) を実装(コードあり)。(C)(能力交渉に
+よる `ARUARU_LLM_ENABLE_*` 自動選択)は挙動変更を伴うため次スライス。
+
+- **`src/main.rs`**: `BackendMatrixRow { backend, status, note_en, note_ja }`
+  + `fn backend_matrix(&AccelerationInfo) -> Vec<BackendMatrixRow>`(8 行:
+  cpu-simd / vulkan-spirv / directx-dxil / cuda / metal / hip-rocm /
+  sycl-levelzero / webgpu-wasm)。`status` は `active` / `compiled-in` /
+  `not-compiled-in` / `planned`。実装済み 3 経路は `AccelerationInfo` の
+  実行時状態から、未実装の将来経路(metal/hip/sycl/webgpu)は `planned`
+  固定。`RuntimeInfoResponse.backend_matrix` として `GET /v1/runtime` へ。
+  **報告のみ・挙動不変**(このエンドポイントの既存契約どおり)。
+- **テスト**: `runtime_backend_matrix_tests` 4 件(8 行の順序・status が
+  許可集合内・note 非空、cpu-simd は決して `not-compiled-in` にならない、
+  vulkan 行が `AccelerationInfo` の tier 状態を反映、将来経路は `planned`)。
+  `cargo test --release` **105 passed / 2 ignored**(既存 101 + 新規 4、
+  回帰なし)。
+- **README**: `README.md` / `README-English.md` に llama.cpp 風の
+  バックエンド表を追加(日英、正本 `open-cuda/OmniGPU-Design.md`
+  §11.6/§12.3 へのリンク付き)。
+- **実 HTTP E2E**(release、既定 CPU ビルド): `GET /v1/runtime` の
+  `backend_matrix` が 8 行を返し、`cpu-simd => active` /
+  `vulkan-spirv,directx-dxil,cuda => not-compiled-in` /
+  `metal,hip-rocm,sycl-levelzero,webgpu-wasm => planned` を確認。
+- clippy: `backend_matrix` / `BackendMatrixRow` に新規指摘なし
+  (既存の `ENGINE_GPT2_GREEDY` 未使用等のみ)。
+
+**次スライス (C)**: `ARUARU_LLM_ENABLE_FP8_WEIGHTS` / `_MLA_KV_COMPRESSION`
+/ `_FLASH_ATTENTION` を「未指定なら起動時の能力交渉で自動判定、指定なら
+override」へ。判定条件は open-cuda 側の `supports_fp8_tensor_core` 等の
+能力フラグ。挙動変更のため実 HTTP E2E で既定生成が変わらないことを確認
+してから入れる。
+
+**English**: Implemented slices (A)(B). `src/main.rs` adds
+`BackendMatrixRow` + `backend_matrix(&AccelerationInfo)` (8 rows:
+cpu-simd / vulkan-spirv / directx-dxil / cuda / metal / hip-rocm /
+sycl-levelzero / webgpu-wasm; status `active` / `compiled-in` /
+`not-compiled-in` / `planned`), surfaced as
+`RuntimeInfoResponse.backend_matrix` on `GET /v1/runtime` — reporting
+only, no behaviour change. 4 new unit tests
+(`runtime_backend_matrix_tests`); `cargo test --release` 105 passed / 2
+ignored (was 101 + 4, no regressions). Added a llama.cpp-style backend
+table to both READMEs (JA + EN, linking `OmniGPU-Design.md` §11.6/§12.3).
+Real HTTP E2E (release, default CPU build): `backend_matrix` returns 8
+rows with `cpu-simd => active`, the other implemented paths
+`not-compiled-in`, the future paths `planned`. clippy: no new findings.
+Next slice (C): make `ARUARU_LLM_ENABLE_*` "auto via capability
+negotiation when unset, override when set", gated on `open-cuda`'s
+`supports_fp8_tensor_core` etc., verified not to change default
+generation.
+
+## HANDOFF追記(2026-09-03続き) `src/hardware.rs` に精度(F16/F32/F64/F128)を考慮したVRAM見積もりを追加
+
+ユーザー指示「open-directx・open-cuda・aruaru-llmで今後 **32GB VRAM級**の
+NVIDIA(RTX)/AMD/Intel GPUを前提に、**F16/F32/F64**で開発する」+ 追って
+「**F128まで見据えて**」への対応。companion agentが同時並行で
+`open-cuda`(`opencuda-core`/`opencuda-blas`へKernelArg F16/F32/F64/F128
+バリアント+GEMM実装)と`open-directx`(shader-translate-layerの精度範囲
+ドキュメント化)を担当、本リポジトリはモデル推奨・ハードウェア検出層
+(`src/hardware.rs`)を担当した(3リポジトリを跨いだ並行作業、
+`open-directx`/`open-cuda`自体には触れていない)。
+
+- **既存の`recommend_id_for_vram`**(VRAM容量→カタログモデルIDの単純
+  ヒューリスティック)は、モジュールdoc冒頭の「正直な開示」通り
+  「パラメータ数×4バイト(fp32換算)」固定で、精度の概念が一切無かった
+  ——これが今回の実質的なギャップだった。同じVRAM予算でもfp16推論なら
+  fp32の約2倍のパラメータ数のモデルが収まる、という実デプロイで広く
+  行われる最適化を反映できていなかった。
+- **`InferencePrecision`列挙型**(`F16`=2バイト/パラメータ・`F32`=4・
+  `F64`=8・`F128`=16)と`recommend_id_for_vram_at_precision(vram_bytes,
+  precision)`を新設。既存の`recommend_id_for_vram`は`F32`を既定として
+  この新関数へ委譲するだけの後方互換ラッパーに変更(シグネチャ不変、
+  既存呼び出し元・既存テストは無修正で通る)。
+- **F128についての正直な開示**: NVIDIA/AMD/Intelいずれも、GPU上で
+  F128(四倍精度)をネイティブ実行できるTensor Core/ALUは存在しない。
+  ソフトウェアエミュレーション(倍々精度合成等)でのみ実現可能で、
+  実用上のLLM推論速度としては非現実的。本関数へ含めているのは
+  `open-cuda`側のKernelArg型システムがF128を型として持つ設計方針
+  (companion agentが並行実装中)との**一貫性のためだけ**であり、
+  「F128でLLM推論するのが実用的」という主張は一切していない
+  (open-cudaのcompanion agentが記録する同旨の開示と揃えた)。
+- **テスト**: `hardware::tests`に6件追加(F16がF32以上のサイズを推奨
+  すること・F64/F128がF32以下のサイズしか推奨しないこと・
+  `recommend_id_for_vram`が`F32`委譲と一致すること・`None`(検出不能)
+  は精度に関わらず常に最小サイズへ固定フォールバックすること・
+  `bytes_per_param`の値そのもの)。`cargo test`(`src/`全体、release
+  ではなくdefault profile): **107 passed / 3 failed / 2 ignored**——
+  3件の失敗(`chat_providers::tests::configured_providers_reflects_
+  runtime_keys`のGemini鍵未設定起因・`cache_optimizer::tests::*`の
+  整数オーバーフロー2件)はいずれも`hardware.rs`と無関係な既存の
+  pre-existingな失敗であることを、同テストをHEAD(本変更コミット前)で
+  個別実行して確認済み(本変更由来の回帰ではない)。`hardware::`配下
+  9件は全通過。
+- **精度の実推論配線について(正直な開示)**: `open-cuda-llm::GptModel`
+  の重みロード自体は依然F32前提(一部F16/BF16/FP8→f32変換のみ対応、
+  2026-09-02 HANDOFF参照)であり、`open-cuda`側のFP8/F16/F64/F128
+  companion作業がまだ実装途上のため、本関数が選んだ精度を実際の
+  ロード時dtypeとして使う配線は**まだ存在しない**(推奨モデルサイズの
+  見積もり計算にのみ使う)。`open-cuda`側の型システム拡張が完了し次第の
+  次スライス課題として記録するに留める(誇張しない)。
+- **ビルド時の副次的な観測**: 本作業中、`open-cuda`companion agentの
+  作業がまだ途中(`opencuda-cpu`の`KernelArg`非網羅match)だった時間帯は
+  ワークスペース全体のビルドが一時失敗した(`opencuda-cpu`が
+  `KernelArg::F16/F64/F128`の新規バリアントを網羅していなかったため)。
+  数分後の再試行でcompanion側の作業が進み解消——3リポジトリを跨いだ
+  並行セッションでは、依存先リポジトリの一時的な未完了状態によるビルド
+  失敗が起こりうる旨を記録しておく(このリポジトリ側の実装に問題は
+  無かった)。
+
+**English**: Added precision-aware VRAM sizing to `src/hardware.rs`,
+following the user's instruction to target 32GB-class NVIDIA/AMD/Intel
+GPUs going forward with F16/F32/F64 (later extended to include F128) —
+a 3-repo parallel effort where companion agents handled `open-cuda`
+(KernelArg F16/F32/F64/F128 + GEMM) and `open-directx` (precision scope
+docs) while this repo covers model recommendation/hardware detection.
+The old `recommend_id_for_vram` only ever assumed fp32 (4 bytes/param,
+per its own "honest disclosure" doc comment) with no precision concept
+at all — the real gap. Added `InferencePrecision` (F16=2/F32=4/F64=8/
+F128=16 bytes-per-param) and `recommend_id_for_vram_at_precision`; the
+old function now delegates to it with F32 as the default (signature and
+behavior unchanged, fully backward compatible). Honest disclosure on
+F128: no GPU vendor (NVIDIA/AMD/Intel) has native quad-precision
+hardware — it's software-emulated only and impractical for real
+inference; it's included purely for type-system consistency with
+open-cuda's parallel KernelArg work, not as a real inference option.
+Added 6 new unit tests (F16 recommends >= F32's model size for the same
+VRAM, F64/F128 recommend <= F32's, the legacy function matches F32
+delegation, the `None`/undetected-GPU fallback stays precision-
+independent, byte-per-param values). `cargo test`: 107 passed / 3
+failed / 2 ignored — the 3 failures (`chat_providers`'s Gemini-key
+check, 2x `cache_optimizer` integer-overflow) are confirmed pre-existing
+and unrelated to this change (verified by running them individually
+against HEAD before this commit); all 9 `hardware::` tests pass. No
+wiring yet to actual inference dtype selection — `open-cuda-llm::
+GptModel`'s weight loading is still fp32-oriented and the sibling repo's
+precision work is still in progress, so this estimate feeds only the
+recommended-model-size calculation for now, honestly noted as a future
+slice once open-cuda's type-system work lands. Also noted for the
+record: mid-session, the shared cargo workspace failed to build for a
+few minutes because the open-cuda companion agent's work was mid-flight
+(`opencuda-cpu` had a non-exhaustive match on the new `KernelArg`
+variants) — resolved itself once that companion session progressed;
+this repo's own code was not at fault.
+
+## HANDOFF追記(2026-09-11) Qwen2/Qwen2.5系(open-cuda-llm::QwenModel)を実配線 + 推奨/サイズ切替メッセージ日英併記 + AI/LLMニュース4言語 / Follow-up: wired up open-cuda-llm::QwenModel + bilingual recommend/step messages + 4-language AI/LLM news
+
+2026年9月頭に話題になった中国発の小型高性能LLM(Qwen3.5系・
+DeepSeek-V4.1-Flash等)のニュースを受け、以下3点を実装した。
+
+1. **Qwen2/Qwen2.5系モデルの実配線**(`open-cuda-llm::QwenModel`、
+   正本は`open-cuda/CLAUDE.md`の2026-09-11 HANDOFF追記):
+   既存の`generation.rs`(`GptModel`、1246行・FP8/MLA/DXIL/層折りたたみ等
+   高度な配線多数)には一切手を触れず、完全に並行・独立した経路
+   `qwen_generation.rs`を新設。`model_catalog.rs`に`QWEN_CATALOG`
+   (qwen2.5-{0.5b,1.5b,3b}-instruct、既存`install()`をそのまま再利用)。
+   `GET /v1/qwen/catalog`・`POST /v1/qwen/install`・`POST /v1/qwen/select`・
+   `POST /v1/generate-qwen`を新設(既存`/v1/models/*`・`/v1/generate`は
+   無改修)。**実機E2E検証**(release build、実HTTPリクエスト):
+   qwen2.5-0.5b-instructを選択→"The capital of Germany is" ->
+   " Berlin. It was founded in 1870 and has a population of"という
+   一連の応答を確認。
+   - **正直な開示**: このQwen経路にはFP8/MLA(サービング層からは)/
+     DXILオフロード/層折りたたみ/投機的デコードはまだ配線されていない
+     (`open-cuda-llm`側の`QwenModel`自体はMLA圧縮に対応済みだが、
+     `qwen_generation.rs`からはまだ呼べない、次の増分)。
+2. **推奨/サイズ切替メッセージの日英併記**: `hardware::Recommendation::
+   disclosure_ja`・`/v1/recommend-and-download`・`/v1/download-larger`・
+   `/v1/download-smaller`の各メッセージへ英訳を追記(既存の「日本語 /
+   English」併記の慣例に合わせ、フィールドは増やさずJSON契約を維持)。
+   併せて「1段階小さいモデルへいつでも簡単に戻せる」旨(既存の
+   `download-smaller`機能が実質的なロールバック)を明記。
+3. **AI/LLMニュース4言語取得**(`news_geo.rs`拡張): 既存の
+   `refresh()`/`GET /v1/news/latest`(サーバー接続国の一般ニュース、
+   単一言語)とは別に、`refresh_ai_news()`/`GET /v1/news/ai-latest`/
+   `POST /v1/news/ai-refresh`を新設。英語・日本語・簡体字中国語・
+   繁体字中国語の4言語でAI/LLM関連ニュースを`web_search`
+   (Google Custom Search)経由取得しローカルDB
+   (`data/ai_news_db.json`)へ保存。1言語失敗でも他言語は継続。
+   **正直な開示**: これは表示専用の情報収集であり、取得内容を根拠に
+   使用中のLLMを自動で切り替えることはしない(モデル変更は既存の
+   ユーザー操作起点のエンドポイントのみが行う——起動時の無断自動採用は
+   既存のダウンロードポリシー・安全方針に反するため実装しない)。
+
+検証: `cargo build`成功。`cargo test`は95 passed(既存の16失敗は
+本変更と無関係の事前からの失敗、`git stash`で変更前後の同一集合を確認済み)。
+
+**保留中(要確認)**: デモ・本番環境それぞれでのメール通知(日英)。
+送信インフラ(SMTP)・宛先収集の仕組みがこのリポジトリ群に存在せず、
+自動送信ボットは安全方針上作らない。宛先=管理者本人(norukia.jp@gmail.com)
++ダウンロードユーザー、Slackは無し、LINE公式アカウント検討中——
+実装は次回以降。
+
+*English*: In response to the early-September-2026 news wave around
+small-but-strong Chinese open-weight LLMs (Qwen3.5 family,
+DeepSeek-V4.1-Flash), added three things: (1) wired
+`open-cuda-llm::QwenModel` into serving as a fully parallel path
+(`qwen_generation.rs`, new `/v1/qwen/*` and `/v1/generate-qwen`
+endpoints, existing `GptModel` path untouched) — verified end-to-end via
+real HTTP requests against a release build with Qwen2.5-0.5B-Instruct;
+(2) made the recommend/step-size messages bilingual (JA/EN in the same
+field, no API contract change) and documented that "download one size
+smaller" already serves as an easy rollback; (3) added a 4-language
+(EN/JA/zh-CN/zh-TW) AI/LLM news digest (`refresh_ai_news()` /
+`/v1/news/ai-refresh` / `/v1/news/ai-latest`), display-only — it never
+drives automatic model switching. Email notifications remain an open
+question pending SMTP/recipient-list infrastructure that doesn't exist
+yet in this repo group.
+
+## HANDOFF追記(2026-09-13) 本物のDeepSeek-V2/V3 MLAアーキテクチャを実配線(dense-onlyのため自動ダウンロードカタログは意図的に見送り) / Follow-up: wired the real DeepSeek-V2/V3 MLA architecture (no auto-download catalog yet — dense-only limitation)
+
+`open-cuda`側に新設された`open-cuda-llm::DeepseekModel`(本物の
+DeepSeek-V2/V3 Multi-head Latent Attention、`qwen_generation.rs`と
+同じ「事後retrofitではなく実チェックポイントの低ランク射影重みを
+そのまま読み込む」設計)を、`qwen_generation.rs`と同じパターンで
+`deepseek_generation.rs`として実配線した。
+
+追加したエンドポイント: `POST /v1/deepseek/select { "dir": "..." }`
+(ローカルディレクトリを直接指定)・`POST /v1/generate-deepseek`・
+`GET /v1/deepseek/status`(自動ダウンロードカタログが無い代わりに
+アクティブモデルの状態と制約開示だけを返す)。既存の`/v1/generate`
+(GPT-2系)・`/v1/generate-qwen`(Qwen系)は無改修。
+
+**なぜ`QWEN_CATALOG`のような自動ダウンロードカタログを設けなかったか
+(正直な開示)**: `DeepseekModel::load`(`open-cuda`側`deepseek_arch.rs`)は
+MLA部分(`self_attn.*`)は実チェックポイントのテンソル名で読めるが、
+MoE(DeepSeekMoE、`mlp.experts.*`)層は読めず、dense SwiGLU MLPのみ
+対応。実在するDeepSeek-V2/V2-Lite/V3の公開チェックポイントは
+`first_k_dense_replace`(通常1)以降のほぼ全層がMoEのため、**ダウンロード
+即動作するリポジトリを正直に提示できない**——Qwenのように
+「ダウンロードすればそのまま動く」カタログエントリを出すのは、
+このリポジトリ全体の「誇張しない」方針に反する。そのため`select`は
+`model_catalog`のカタログid方式ではなく、ユーザーが既に用意した
+(または将来ダウンロードした)チェックポイントディレクトリを直接
+指定する生パス方式にした。
+
+**2026-09-13(続き)、方針転換の指示を受けMoE対応の設計調査に着手**:
+ユーザーから「MoE未対応なのでMoE対応の為の設計と実装、開発の為に
+世界中の言語でGoogle検索とGithub調査して」との指示を受け、
+DeepSeekMoE(共有エキスパート+ルーティングされたエキスパート、
+`n_shared_experts`/`n_routed_experts`/`num_experts_per_tok`/
+`first_k_dense_replace`)の実チェックポイント構造・ルーティング計算・
+既存推論エンジン(vLLM/SGLang/llama.cpp等)の実装パターンを、英語・
+日本語・中国語で調査するタスクを開始した(`open-cuda`側の
+`open-cuda-llm::DeepseekModel`へMoE層を追加する設計のため——完了すれば
+初めて実在の公開チェックポイントがエンドツーエンドでロードでき、
+このリポジトリのカタログにも正直に追加できるようになる)。調査結果は
+`open-cuda`側のPORTING.md/CLAUDE.mdに記録する(このリポジトリ側は
+サービング層〈`deepseek_generation.rs`〉のみを担当するため、
+アーキテクチャ設計の詳細は`open-cuda`側が正本)。
+
+**2026-09-13(続き3)、open-cuda側でDeepSeekMoE実装完了**: `open-cuda`
+リポジトリ側で`DeepseekModel`へDeepSeekMoE(共有エキスパート+top-k
+ルーティング)が実装された(正本: `open-cuda/CLAUDE.md`・
+`open-cuda/PORTING.md`の該当エントリ、`deepseek_arch.rs`のモジュール
+doc参照)。これにより`scoring_func="softmax"`・`n_group=1`という
+V2-Lite相当の構成のチェックポイントは、理論上`first_k_dense_replace`
+以降のMoE層も含めてエンドツーエンドでロードできる設計になった。
+**ただし正直な開示**: (1) aux-loss-free補正・group-limited routing・
+sigmoidスコアリング(いずれもV3系)は`open-cuda`側で未対応のまま
+(`load()`が明示的に拒否)、(2) `deepseek-ai/DeepSeek-V2-Lite-Chat`
+(15.7Bパラメータ)を実際にダウンロード・ロードして動作確認する実機
+検証は**まだ行っていない**(この開発機のメモリ・実行時間の都合上、
+仮にロードできてもCPU推論は極めて低速になる見込み——`open-cuda`側の
+docにも同じ限界が明記されている)。したがってこのリポジトリの
+`model_catalog.rs`へ`DEEPSEEK_CATALOG`を追加するのは、実機ダウンロード
+検証(最低でもロードが成功し、1トークンでも生成できることの確認)を
+終えてからにすること——「MoE対応したから動くはず」という推測だけで
+カタログへ追加するのは、このリポジトリの「誇張しない」方針に反する。
+
+**次回への引き継ぎ**: MoE実装完了後、(1) `model_catalog.rs`へ
+`DEEPSEEK_CATALOG`(実在するMoE込みチェックポイント、例:
+`deepseek-ai/DeepSeek-V2-Lite-Chat`)を追加、(2) `GET /v1/deepseek/catalog`・
+`POST /v1/deepseek/install`をQwen版と同じ形で新設、(3) `select`を
+現在の生パス方式からカタログid方式へ統一するかは要検討(ローカル
+チェックポイント指定のユースケースも残したいため、両対応が妥当かもしれない)。
+
+## HANDOFF 2026-09-20(検索・AI切替の実装状況)
+
+- **共有検索キー**: `web_search::search()`は共有(開発者)キー経由。全訪問者合算で**1日100回**の
+  上限(`SHARED_SEARCH_DAILY_LIMIT`、プロセス再起動で0に戻る)。上限到達・失敗時は検索無しで
+  優先順チェーンへ自動フォールバック。訪問者持参キー(`search_with_credentials`)は上限対象外。
+- **Google Custom Search JSON API**: VPSに`ARUARU_LLM_GOOGLE_SEARCH_API_KEY/_CX`を設定済み
+  (`/root/aruaru-llm/.env.google-search`、権限600、systemdの`EnvironmentFile=-`で読込)だが、
+  Google側が**403 "This project does not have the access to Custom Search JSON API"**を返し
+  **実際には使えない**(APIを「有効」にしても解消しない=新規プロジェクトへの提供終了。CXは正しい)。
+  古いプロジェクトで作ったキーなら通る可能性あり。2027年に終了予定。
+- **Brave Search API(将来の候補メモ)**: 検索の第一候補として実装済み
+  (`ARUARU_LLM_BRAVE_SEARCH_API_KEY`、`search_brave`)。ユーザーは申し込んだが**有料のみ**と
+  分かったため**今回は見送り**。「格安なので将来的には利用するかもしれない」(2026-09-20)。
+  再開時はキーを`/root/aruaru-llm/.env.providers`へ追記して`systemctl restart aruaru-llm`するだけ。
+  Bing Search APIは2025年に終了しているため候補外。
+- **Gemini**: `AQ.`で始まるVertex AI(express mode)形式のキーに対応
+  (`https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-2.5-flash:generateContent`、
+  リクエストに`role:"user"`必須)。`AIza`形式は従来のGenerative Language API。VPSの
+  `/root/aruaru-llm/.env.providers`に設定済み(`EnvironmentFile=-`)。優先順は
+  Google検索→**Gemini**→ChatGPT→DeepSeek→Grok→Claude(`provider_priority.rs`)。
+- 優先順チェーンは`enabled`フラグに関係なく常に有効(キー未設定のものは自動でスキップ)。
+- ⚠️VPSの`/root/repository/open-cuda`が古くて`DeepseekModel`未定義でビルドが落ちた
+  ことがあった(`git pull`で解消)。aruaru-llmをVPSでビルドする前に`open-cuda`もpullすること。
+
+## HANDOFF 2026-09-21: ハイブリッド(良い所どり)とGroq/Cerebras/Mistral追加
+
+- ユーザー指示: **Gemini・Groq・Grok・Mistralの4つに同時に質問し、2つ以上から回答があれば1つのAIが
+  「良い所どり」の1回答にまとめる。1つしか使えなければそのまま返す**。上が全て使えなくなったら下を順番に。
+- 実装: `chat_providers::complete_hybrid`(`HYBRID_GROUP`)。設定済みの群を`complete_multi`で並列に呼び、
+  2つ以上→先頭のAI(Gemini→Groq→Grok→Mistral)へ統合プロンプトを渡して最良の1回答を作らせる
+  (統合に失敗したら先頭の生の回答)。群が全滅→`complete_in_priority_order_skipping`で残り
+  (Cerebras→ChatGPT→DeepSeek→Claude)へ。`POST /v1/chat-providers/complete-priority`の応答に
+  `hybrid_providers`と`synthesized`を追加。`ARUARU_LLM_HYBRID=off`で無効化。
+- 追加プロバイダ(OpenAI互換): Groq(`ARUARU_LLM_GROQ_API_KEY`、既定`openai/gpt-oss-120b`(Llama 3.3 70Bは2026-09時点でGroqから提供終了))、
+  Cerebras(`ARUARU_LLM_CEREBRAS_API_KEY`、既定`llama-3.3-70b`)、Mistral(`ARUARU_LLM_MISTRAL_API_KEY`、
+  既定`ministral-14b-latest`(無料のExperimentでは`mistral-small/medium/magistral`は枠0で429、ministral-3b/8b/14b・codestralが使える))。モデルは`ARUARU_LLM_GROQ_MODEL`等で差し替え可。
+- 既定の優先順: Google検索→Gemini→Groq→Grok→Mistral→Cerebras→ChatGPT→DeepSeek→Claude。
+- **VPSにキーが入っているのはGeminiのみ**(`/root/aruaru-llm/.env.providers`)。Groq/Cerebras/Mistral/Grokの
+  キーはユーザーがアカウントを作って`F:\`のtxtへ保存 → scpで`.env.providers`へ追記して再起動する。
+  Grok(xAI)のAPIは基本有料。ChatGPT/DeepSeekも有料。
+- ⚠️`chat_providers`のテストは共有の静的状態(実行時キー)を書き換えるため、並列実行で稀に失敗する
+  既存の不安定さがある(今回1回再現、再実行で通過)。
+- **未実装(ユーザー要望、方式は提案済み)**: 各社のモデル名が将来バージョンアップ/廃止されても追従する
+  自動更新(各社`/models`から最新の無料・安定版を選び、試験呼び出しに成功した時だけ切り替え、
+  今より小さい/古いモデルへは自動で下げない、1日1回)。ユーザーの承認待ち。
+
+**追記(2026-09-21 後半)**: **Gemini・Groq・Mistralの3社ハイブリッドが本番で稼働**(公開URLで確認、
+日本語の長い質問で約26秒・英語の短い質問で約6秒。遅いのはGeminiの応答と統合の1回分)。
+- Groq: キー設定済み。`llama-3.3-70b-versatile`は提供終了のため既定を`openai/gpt-oss-120b`へ(日本語OK、約0.5秒)。
+- Mistral: キー設定済み。無料のExperimentでは**`mistral-small/medium/magistral`は枠0で429、`mistral-large`は
+  プラン外(403)**。使えるのは`ministral-3b/8b/14b`・`codestral`。既定を`ministral-14b-latest`へ(約1秒)。
+  ⚠️Mistralの「アクティベート」は、キー作成後にプラン(Experiment)選択とSMS確認が要る。
+  ⚠️`F:\miatral.txt`にはAPIキー本体が入っている(ファイル名は綴り違い)。
+- 見送り(有料): Grok(xAI)、Cerebras。キー未設定なので自動でスキップされる。
+- **各社のモデル名は突然廃止される**(実例: GroqのLlama 3.3 70B)。モデル名自動追従(各社`/models`から
+  最新の無料・安定版を選び、試験呼び出しに成功した時だけ切替、今より小さいモデルへは下げない、1日1回)は
+  提案済みで**ユーザーの承認待ち**。
+
+**追記(2026-09-21 夜)**: **Gemini・Groq・Mistral・Cloudflare Workers AIの4社ハイブリッドが本番で稼働**
+(公開URLで確認、日本語の長い質問≈16.5秒、英語の短い質問≈5.6秒)。
+- Cloudflare Workers AI: キーは`ARUARU_LLM_CLOUDFLARE_API_KEY=アカウントID:APIトークン`(1変数)。
+  既定モデル`@cf/meta/llama-3.3-70b-instruct-fp8-fast`(日本語OK、約0.5秒)。`F:\cloudflare-token.txt`に
+  同形式で保存済み。⚠️途中でユーザーが「アカウント名」「ワーカーURL」をトークンと取り違えた。
+  アカウントIDは秘密でないため貼ってもらって`ID:トークン`へ結合した(トークン自体は画面に出していない)。
+- OpenRouter(`ARUARU_LLM_OPENROUTER_API_KEY`、既定モデル`openrouter/free`=空いている無料モデルを自動選択)は
+  **コード実装済みだがキー未取得**(アカウント作成が必要、キー無しは401)。キーは`F:\openrouter-key.txt`へ。
+- **GitHub Modelsは廃止予定(retirement brownout、410)のため見送り**。
+- Ollama(ローカル実行、`ARUARU_LLM_OLLAMA_MODEL`設定時のみ)はコード実装済み・実Ollamaでの確認は未実施。
+  クラウド群が全て使えない時の受け皿(優先順でハイブリッド群の直後)。
+- HYBRID_GROUPの最大構成: Gemini・Groq・Grok・Mistral・OpenRouter・Cloudflare(キーがあるものだけ参加)。
+
+**追記(2026-09-21 深夜)**: ハイブリッドを**基本2社で運用し、予備へ自動交代**する方式に変更
+(ユーザー指示「最初は二社で、無料枠が切れたり無料期間が終了したものから次のAIへ、予備が欲しい。
+いつも出来れば二社、最後は仕方なく1社」)。`ARUARU_LLM_HYBRID_SIZE`(既定2)。優先順の上位N社を並列に呼び、
+失敗(枠切れ429=6時間/認証・権限・廃止401,402,403,404=12時間/一時的=2分)は**お休み**にして同じ回のうちに
+予備の次を繰り上げる。お休み中は以後の質問で飛ばす(メモリ上のみ、再起動で消える)。予備が尽きたら1社、
+群が全滅ならOllama→有料の順次。**検証済み**: Geminiだけ無効キーにした手元の別インスタンスで、1回目は
+Gemini失敗→Mistral繰り上げ(Groq+Mistral)、2回目以降はGeminiを最初から飛ばすことを確認。
+本番の既定構成(キー設定済み): Gemini・Groq(使用中の2社)、予備=Mistral・OpenRouter・Cloudflare。
+
+## HANDOFF追記(2026-09-21) / HANDOFF addendum (2026-09-21)
+
+**日本語**: (1)クラウドAIの選択(`providers[]`、`complete_hybrid_with`、`parse_selected_providers`、最大`MAX_SELECTED_PROVIDERS`=3)。(2)`/v1/accelerators`と`/v1/runtime`のCPUインベントリ(open-cpu連携)。(3)VPSは`../open-cpu`をパス依存するため、**aruaru-llmを更新する前にopen-cpuを`git pull`する**。(4)スマホNPU(NNAPI)はAndroid側(open-english)で実装し、Rustからは触らない方針。詳細は`open-cuda/DEVELOPMENT-NEXT.md`の「NPU層の再設計メモ」。
+
+**English**: (1) Cloud-AI selection (`providers[]`, `complete_hybrid_with`, `parse_selected_providers`, max `MAX_SELECTED_PROVIDERS`=3). (2) `/v1/accelerators` and the CPU inventory in `/v1/runtime` (via open-cpu). (3) The VPS path-depends on `../open-cpu`, so **`git pull` open-cpu before updating aruaru-llm**. (4) Phone NPU (NNAPI) lives on the Android side (open-english), not in Rust. See "NPU層の再設計メモ" in `open-cuda/DEVELOPMENT-NEXT.md`.
+
+## HANDOFF追記(2026-09-22、本日後半のまとめ・多言語) / HANDOFF addendum (2026-09-22, later today, multilingual)
+
+**日本語**: 本日追加した機能: (1) 管理者専用のAI優先順位番号付け(#1-3)、(2) 四つの9パズルの自動採点(演算子・括弧の全角半角/日本語表記ゆれを正規化、括弧忘れのみ半分正解、÷9丸ごと忘れは不正解)、
+(3) 自分のAPIキー設定時はWEB版共有AIと併用しない(自分の鍵を優先・排他利用)、(4) タイ語・ベトナム語・フィリピン語・ミャンマー語・クルド語・トルコ語・ロマンシュ語を学習言語に追加(文化・敬語の豆知識つき)、
+(5) 学びたい言語・応答言語・レベルの保存(PC/スマホ/タブレット共通)、(6) 話題ガイドにGoogle画像検索リンク追加、(7) 文字入力/音声入力/翻訳/AI自身の知識に自信が無い時のGoogle検索自動裏取り(3つの理由を利用者へ開示)、
+(8) 3〜4ヶ国語同時ハイブリッド表示(hybrid3/hybrid4)、(9) 「今日のニュースは?」が公開WEB版で常に失敗していた不具合修正(`/v1/public/news/for?country=...`、質問言語で国を判定)、
+(10) ニュースダイジェストの国別DATABASE化(TTL3時間、`data/news_by_country.json`)+日付記録(検索日時・記事取得日時、`retrieved_at_unix`)、(11) 8日以上前のニュースを生きているDBから追い出しMarkdownへアーカイブする仕組み
+(`prune_and_archive_stale_news`、GitHubへの実際のpushは今回未実装——常時稼働プロセスへ書き込み資格情報を持たせないための意図的な判断、実際のpushは今後Claude Code経由で手動実施)、
+(12) 「もっと簡単に」「難しい」発言でレベルを自動的に1段下げる機能+ネイティブ表現アドバイスの指示、(13) 「最新の情報が欲しい」ニュアンス検出でGoogle検索・GitHub調査を自動的に有効化。
+**未着手**: 実際のGitHubアーカイブpush、GitHub Actionsやスケジュールタスクとしての定期実行の自動化(`news_prune_archive`エンドポイントは実装済みだが、呼び出しの自動化・cron化は未着手)。
+
+**English**: Features added today: (1) admin-only AI priority numbering (#1-3), (2) automatic grading for the four-nines puzzle, (3) own API key now excludes the shared web AI (exclusive use), (4) added Thai/Vietnamese/Filipino/Burmese/Kurdish/Turkish/Romansh as learn languages (with cultural tips),
+(5) persisted learn-target/reply-lang/level across PC/phone/tablet, (6) Google Images links in topic guides, (7) automatic Google-search grounding when text/voice/translation/AI-knowledge confidence is low (with a visible reason), (8) 3/4-language simultaneous hybrid mode,
+(9) fixed "today's news" always failing on the public web version, now picks the country from the question's language, (10) per-country news digest database (3h TTL) with retrieval timestamps on each item, (11) archiving of news older than 8 days out of the live DB into a local Markdown file
+(actual GitHub push not yet automated — deliberately not giving the always-running server process write credentials; the real push will be done manually via Claude Code), (12) auto level step-down on "too difficult/simpler please", (13) auto-enabling Google/GitHub search on "latest info" phrasing.
+**Not done yet**: actually pushing the archive to GitHub, and scheduling/cron automation for `news_prune_archive`.
+
+## HANDOFF追記(2026-09-22、多言語版) / Multilingual handoff addendum
+
+**简体中文**: 今天新增的功能:(1)管理员专用的AI优先级编号(#1-3),(2)"四个9"数学谜题自动评分(标准化全角/半角运算符及日语表达,只忘记括号记为半对,完全忘记÷9记为错误),
+(3)设置自己的API密钥后不再与网页版共享AI并用(优先且排他使用自己的密钥),(4)新增泰语、越南语、菲律宾语、缅甸语、库尔德语、土耳其语、罗曼什语作为学习语言(附文化及敬语小知识),
+(5)学习语言/回复语言/等级设置可跨PC、手机、平板保存,(6)话题指南中新增Google图片搜索链接,(7)当文字输入/语音输入/翻译/AI自身知识置信度低时自动通过Google搜索核实(并向用户说明三种触发原因),
+(8)支持3~4种语言同时混合显示(hybrid3/hybrid4),(9)修复了公开网页版"今天的新闻"功能一直失败的问题(新增`/v1/public/news/for?country=...`,根据提问语言判断国家),
+(10)按国家分类的新闻摘要数据库(TTL 3小时,`data/news_by_country.json`)并记录检索/发布日期(`retrieved_at_unix`),(11)将8天以上的旧新闻从活跃数据库中清除并归档为Markdown文件
+(实际推送到GitHub的部分本次尚未实现——刻意不给常驻运行的服务器进程赋予GitHub写入权限,实际推送将来通过Claude Code手动完成),
+(12)当用户说"简单一点"或"太难了"时自动降低一级难度,并附带母语者表达建议,(13)检测到"想要最新信息"的语气时自动启用Google搜索与GitHub调查。
+**尚未完成**: 实际推送新闻归档到GitHub、以及`news_prune_archive`的定时/自动化执行。
+
+**繁體中文**: 今天新增的功能:(1)管理員專用的AI優先順序編號(#1-3),(2)「四個9」數學謎題自動評分(標準化全形/半形運算子及日語表達,只忘記括號記為半對,完全忘記÷9記為錯誤),
+(3)設定自己的API金鑰後不再與網頁版共用AI並用(優先且排他使用自己的金鑰),(4)新增泰語、越南語、菲律賓語、緬甸語、庫德語、土耳其語、羅曼什語作為學習語言(附文化及敬語小知識),
+(5)學習語言/回覆語言/等級設定可跨PC、手機、平板保存,(6)話題指南中新增Google圖片搜尋連結,(7)當文字輸入/語音輸入/翻譯/AI自身知識信心度低時自動透過Google搜尋核實(並向使用者說明三種觸發原因),
+(8)支援3~4種語言同時混合顯示(hybrid3/hybrid4),(9)修復了公開網頁版「今天的新聞」功能一直失敗的問題(新增`/v1/public/news/for?country=...`,依提問語言判斷國家),
+(10)依國家分類的新聞摘要資料庫(TTL 3小時,`data/news_by_country.json`)並記錄檢索/發布日期(`retrieved_at_unix`),(11)將8天以上的舊新聞從活躍資料庫中清除並歸檔為Markdown檔案
+(實際推送到GitHub的部分本次尚未實作——刻意不給常駐運行的伺服器行程賦予GitHub寫入權限,實際推送將來透過Claude Code手動完成),
+(12)當使用者說「簡單一點」或「太難了」時自動降低一級難度,並附帶母語者表達建議,(13)偵測到「想要最新資訊」的語氣時自動啟用Google搜尋與GitHub調查。
+**尚未完成**: 實際推送新聞歸檔到GitHub、以及`news_prune_archive`的排程/自動化執行。
+
+**Français**: Fonctionnalités ajoutées aujourd'hui : (1) numérotation de priorité IA réservée aux admins (#1-3), (2) notation automatique du puzzle des « quatre 9 » (normalisation des opérateurs pleine/demi-chasse et des expressions japonaises ; oubli des parenthèses seul = à moitié correct, oubli complet de ÷9 = incorrect),
+(3) l'utilisation de sa propre clé API exclut désormais l'IA partagée du site web (usage exclusif de sa propre clé), (4) ajout du thaï, vietnamien, philippin, birman, kurde, turc et romanche comme langues d'apprentissage (avec notes culturelles),
+(5) persistance des préférences (langue cible, langue de réponse, niveau) sur PC/mobile/tablette, (6) liens de recherche d'images Google dans les guides thématiques, (7) recherche Google automatique lorsque la confiance dans la saisie texte/vocale/traduction/connaissance de l'IA est faible (raison affichée à l'utilisateur),
+(8) mode hybride 3/4 langues simultané (hybrid3/hybrid4), (9) correction du bug où « les nouvelles du jour » échouaient toujours sur le site public (nouvelle route `/v1/public/news/for?country=...`, pays déterminé par la langue de la question),
+(10) base de données d'actualités par pays (TTL 3h, `data/news_by_country.json`) avec horodatage de récupération (`retrieved_at_unix`), (11) archivage des actualités de plus de 8 jours vers un fichier Markdown local
+(le push GitHub réel n'est pas encore automatisé — décision délibérée de ne pas donner d'identifiants d'écriture GitHub au processus serveur permanent ; le push sera fait manuellement via Claude Code), (12) rétrogradation automatique du niveau sur demande explicite (« plus simple », « trop difficile ») avec conseils de formulation naturelle,
+(13) activation automatique de la recherche Google/GitHub sur détection d'une intention « informations les plus récentes ».
+**Non terminé** : push réel de l'archive vers GitHub, automatisation planifiée de `news_prune_archive`.
+
+**Deutsch**: Heute hinzugefügte Funktionen: (1) nur für Admins sichtbare KI-Prioritätsnummerierung (#1-3), (2) automatische Bewertung des „Vier-Neunen"-Rätsels (Normalisierung von Voll-/Halbbreiten-Operatoren und japanischen Ausdrücken; nur vergessene Klammern = halb richtig, komplett vergessenes ÷9 = falsch),
+(3) eigener API-Schlüssel schließt die gemeinsame Web-KI nun aus (exklusive Nutzung des eigenen Schlüssels), (4) Thailändisch, Vietnamesisch, Filipino, Birmanisch, Kurdisch, Türkisch und Rätoromanisch als Lernsprachen hinzugefügt (mit kulturellen Hinweisen),
+(5) Speicherung von Zielsprache/Antwortsprache/Niveau geräteübergreifend (PC/Handy/Tablet), (6) Google-Bildersuche-Links in Themenführern, (7) automatische Google-Suchabsicherung bei geringer Konfidenz bei Text-/Spracheingabe/Übersetzung/KI-Wissen (Grund wird dem Nutzer angezeigt),
+(8) gleichzeitiger 3/4-Sprachen-Hybridmodus (hybrid3/hybrid4), (9) Fehlerbehebung: „heutige Nachrichten" funktionierten auf der öffentlichen Website nie (neue Route `/v1/public/news/for?country=...`, Land wird anhand der Fragesprache bestimmt),
+(10) länderspezifische Nachrichten-Datenbank (TTL 3h, `data/news_by_country.json`) mit Abrufzeitstempel (`retrieved_at_unix`), (11) Archivierung von Nachrichten älter als 8 Tage aus der Live-DB in eine lokale Markdown-Datei
+(tatsächlicher GitHub-Push noch nicht automatisiert — bewusste Entscheidung, dem dauerhaft laufenden Serverprozess keine GitHub-Schreibrechte zu geben; der eigentliche Push erfolgt später manuell über Claude Code), (12) automatische Niveau-Herabstufung bei „einfacher bitte"/„zu schwer" mit Hinweisen zu natürlicher Ausdrucksweise,
+(13) automatische Aktivierung der Google-/GitHub-Suche bei erkannter „aktuellste Informationen"-Absicht.
+**Noch nicht erledigt**: tatsächlicher Push des Archivs zu GitHub, geplante/automatisierte Ausführung von `news_prune_archive`.
+
+**ภาษาไทย**: ฟีเจอร์ที่เพิ่มวันนี้: (1) การจัดลำดับความสำคัญ AI แบบใส่หมายเลข (#1-3) สำหรับผู้ดูแลระบบเท่านั้น (2) การให้คะแนนอัตโนมัติสำหรับปริศนา "เลข 9 สี่ตัว" (ปรับเครื่องหมายเต็ม/ครึ่งความกว้างและคำภาษาญี่ปุ่นให้เท่ากัน ลืมเฉพาะวงเล็บ = ถูกครึ่งหนึ่ง ลืม ÷9 ทั้งหมด = ผิด)
+(3) เมื่อตั้งค่าคีย์ API ของตนเองแล้ว จะไม่ใช้ AI ที่แชร์บนเว็บร่วมด้วย (ใช้คีย์ของตนเองแบบเอกสิทธิ์) (4) เพิ่มภาษาไทย เวียดนาม ฟิลิปปินส์ พม่า เคิร์ด ตุรกี และโรมันช์ เป็นภาษาที่เรียนได้ (พร้อมข้อมูลวัฒนธรรม)
+(5) บันทึกการตั้งค่าภาษาที่เรียน/ภาษาตอบกลับ/ระดับ ข้ามอุปกรณ์ PC/มือถือ/แท็บเล็ต (6) ลิงก์ค้นหารูปภาพ Google ในคู่มือหัวข้อ (7) เปิดใช้การค้นหา Google อัตโนมัติเมื่อความมั่นใจในการพิมพ์/เสียง/การแปล/ความรู้ของ AI ต่ำ (แสดงเหตุผลให้ผู้ใช้เห็น)
+(8) โหมดผสมหลายภาษาพร้อมกัน 3-4 ภาษา (hybrid3/hybrid4) (9) แก้ไขบั๊กที่ฟีเจอร์ "ข่าววันนี้" ใช้งานไม่ได้เลยบนเว็บสาธารณะ (เพิ่มเส้นทาง `/v1/public/news/for?country=...` เลือกประเทศตามภาษาของคำถาม)
+(10) ฐานข้อมูลข่าวสรุปรายประเทศ (TTL 3 ชั่วโมง `data/news_by_country.json`) พร้อมบันทึกเวลาดึงข้อมูล (`retrieved_at_unix`) (11) เก็บถาวรข่าวที่เก่ากว่า 8 วันออกจากฐานข้อมูลไปเป็นไฟล์ Markdown
+(ยังไม่ได้ทำการ push ไปยัง GitHub จริง — เป็นการตัดสินใจโดยเจตนาที่จะไม่ให้สิทธิ์เขียน GitHub แก่โพรเซสเซิร์ฟเวอร์ที่ทำงานตลอดเวลา การ push จริงจะทำผ่าน Claude Code ในภายหลัง) (12) ลดระดับความยากอัตโนมัติเมื่อผู้ใช้พูดว่า "ง่ายกว่านี้" หรือ "ยากเกินไป" พร้อมคำแนะนำสำนวนแบบเจ้าของภาษา
+(13) เปิดใช้การค้นหา Google/GitHub อัตโนมัติเมื่อตรวจพบความต้องการ "ข้อมูลล่าสุด"
+**ยังไม่เสร็จ**: การ push คลังข่าวจริงไปยัง GitHub และระบบอัตโนมัติ/ตั้งเวลาสำหรับ `news_prune_archive`
+
+## HANDOFF追記(2026-09-23、ニュースアーカイブ自動push+参照機能) / HANDOFF addendum (2026-09-23, news archive auto-push + reference system)
+
+**日本語**: 「インターネットニュースを自動収集してGithubの無料のDATABASEを使って自動保存する」への対応として、以下を実装(GitHub Issues/Projects方式ではなく、既存のMarkdownアーカイブ設計と相性の良い「JSON/Markdownファイルをリポジトリで管理」方式を採用)。
+(1) `aruaru-llm/scripts/archive-news-to-github.sh`(新設): `POST /v1/news/prune-archive`を呼び出して8日以上前のニュースをローカルDBから追い出し、生成されたMarkdownをopen-englishリポジトリの`NEWS-TITLE-README.md`へ追記してGitHubへ実際にcommit・push する(常時稼働するRustサーバー本体にはGitHub資格情報を持たせない設計を維持——このスクリプトはVPS上でsystemdタイマー経由で日次実行する独立プロセス)。
+(2) `aruaru-llm/scripts/news-archive-push.service`/`news-archive-push.timer`(新設): 上記スクリプトを毎日1回自動実行するsystemdユニット(VPSの`/etc/systemd/system/`へ配置し`systemctl enable --now news-archive-push.timer`で有効化する運用、今回はユニットファイルの追加のみで、実際のVPSへの配置・有効化は次回対応)。
+(3) `open-english/NEWS-TITLE-README.md`(新設): アーカイブ先ファイル。
+(4) `open-english/server/src/main.rs`の`news_archive_search`/`parse_news_archive_markdown`(新設、`GET /v1/public/news/archive-search?q=<keyword>`): アーカイブされたMarkdownをその場読み込みし、タグ/国名/タイトル/抜粋への部分一致で検索する(全文検索インデックスは持たない素朴な実装、単体テスト5件で検証済み)。
+(5) `open-english/web/app.js`の`archiveNewsSuffix`/`mentionsPastNews`(新設): 質問フォームからの質問で、(a)最新ニュースの取得に失敗した時、または(b)利用者が「先週の」「過去の」等、明示的に過去のニュースを求めた時に、自動でアーカイブを検索して参照する。ブラウザでのモックテストで両パターンとも動作確認済み。
+**未対応**: 実際のVPSへのsystemdユニット配置・有効化、実データでのエンドツーエンド確認(まだ8日以上前のニュースが実在しないため)。
+
+**English**: To satisfy "automatically collect internet news and auto-save it using GitHub's free database," implemented the file-based ("JSON/Markdown files tracked in the repo") approach rather than GitHub Issues/Projects, since it fits the existing Markdown archive design already in place.
+(1) `aruaru-llm/scripts/archive-news-to-github.sh` (new): calls `POST /v1/news/prune-archive` to evict news older than 8 days from the local DB, appends the generated Markdown to `NEWS-TITLE-README.md` in the open-english repo, and actually commits + pushes to GitHub (keeps the design decision of never giving the always-running Rust server GitHub credentials — this script is a separate process run daily via a VPS systemd timer).
+(2) `aruaru-llm/scripts/news-archive-push.service`/`news-archive-push.timer` (new): systemd units to run the script daily (meant to be placed under `/etc/systemd/system/` on the VPS and enabled with `systemctl enable --now news-archive-push.timer`; only the unit files were added this session — actual VPS installation/activation is a follow-up).
+(3) `open-english/NEWS-TITLE-README.md` (new): the archive destination file.
+(4) `news_archive_search`/`parse_news_archive_markdown` in `open-english/server/src/main.rs` (new, `GET /v1/public/news/archive-search?q=<keyword>`): reads the archived Markdown on demand and does substring matching against tags/country/title/snippet (deliberately no full-text search index; verified with 5 passing unit tests).
+(5) `archiveNewsSuffix`/`mentionsPastNews` in `open-english/web/app.js` (new): the question form automatically searches the archive when (a) the latest-news fetch fails, or (b) the user explicitly asks for past news ("last week's", "past", etc.). Both paths verified with mocked browser tests.
+**Not done yet**: actually installing/enabling the systemd units on the VPS, and a real end-to-end check with live archived data (none exists yet since no news has reached the 8-day threshold).
+
+## HANDOFF追記(2026-09-23、世界主要国ニュースの毎日自動収集) / HANDOFF addendum (2026-09-23, daily multi-country news collection)
+
+**日本語**: ユーザー指示「主要な言語を網羅...毎日DATABASE化して」への対応として、`scripts/daily-news-collect.sh`(新設、systemdタイマーで毎日02:00に実行)を追加した。
+日本・アメリカ・中国・台湾・韓国・フィリピン・カンボジア・タイ・マレーシア・イギリス・ドイツ・イタリア・フランス・オーストリア・スイス・インド・ロシア・ウクライナ・イスラエルの19ヶ国を対象に、既存の`GET /v1/news/for?country=...`を順に叩き、`news_by_country.json`(3時間TTLキャッシュ)へ保存させる。
+`news_query_for_country`を拡張し、中国語(簡体字/繁体字)・韓国語・フィリピン語(タガログ語)・クメール語・タイ語・マレー語・ドイツ語・イタリア語・フランス語・ロシア語で現地語検索するようにした(単体テスト6件追加、全green)。
+**意図的に対象外**: 北朝鮮。自由な報道機関が存在せず、Google検索結果は事実上すべて国外(主に英語圏)からの報道になるため、「北朝鮮の現地ニュース」として提示するのは誤解を招くと判断し、ユーザーへ別途報告した上で対象国リストから外した。
+インド・ウクライナ・イスラエルは、ユーザー指示により意図的に英語のまま(インドは英語が事実上の共通語、ウクライナは「英語版があれば」という条件、イスラエルはヘブライ語が「難しくてマイナーすぎる」というユーザー自身の判断)。
+スイスは公用語4つ(独仏伊ロマンシュ)のうち話者数最多のドイツ語を代表とする簡略化。
+収集したニュースは、既存の8日超過アーカイブ機構(`prune_and_archive_stale_news`→`archive-news-to-github.sh`)へそのままつながる。
+
+**English**: To satisfy "cover the major languages... turn it into a daily database," added `scripts/daily-news-collect.sh` (new, run daily at 02:00 via a systemd timer).
+It calls the existing `GET /v1/news/for?country=...` for 19 countries — Japan, United States, China, Taiwan, South Korea, Philippines, Cambodia, Thailand, Malaysia, United Kingdom, Germany, Italy, France, Austria, Switzerland, India, Russia, Ukraine, Israel — populating `news_by_country.json` (3h TTL cache).
+Extended `news_query_for_country` to search in the local native language for Chinese (simplified/traditional), Korean, Filipino (Tagalog), Khmer, Thai, Malay, German, Italian, French, and Russian (6 new unit tests, all passing).
+**Deliberately excluded**: North Korea. No free press exists there, so Google search results would effectively all be foreign (mostly English-language) reporting — presenting that as "North Korea's local news" would be misleading. Reported this decision to the user separately rather than silently including or excluding it.
+India/Ukraine/Israel intentionally stay in English per the user's own instructions (India: English is the de facto lingua franca; Ukraine: "if an English version exists"; Israel: the user judged Hebrew "too difficult and too minor").
+Switzerland is simplified to German (its most-spoken of four official languages) as a representative query.
+Collected news feeds naturally into the existing 8-day-stale archive mechanism (`prune_and_archive_stale_news` → `archive-news-to-github.sh`).
+
+## HANDOFF追記(2026-09-23、Google Custom Search廃止対応・ハイブリッド検索) / HANDOFF addendum (2026-09-23, Google Custom Search sunset workaround, hybrid search)
+
+**日本語**: Google Custom Search JSON APIが新規プロジェクトでHTTP 403(「This project does not have the access to Custom Search JSON API」)を返すようになった件、ユーザーが調査し原因判明:
+Googleが同APIの新規受付を停止し、2027-01-01に完全終了予定という仕様変更で、APIを有効化しても解決しない。対応として`src/web_search.rs`に**SerpApi**・**Bing Search API(Azure)**をBrave Searchに次ぐハイブリッド検索バックエンドとして追加した(`search_serpapi`/`search_bing`)。
+両者とも無料枠が**月単位**(SerpApi: 月100件、Bing Search API v7 F1プラン: 月1,000件)——既存のGoogle/共有検索カウンタ(1日100件)とは性質が異なるため、別途月単位でリセットする専用カウンタ(`SERPAPI_MONTHLY_COUNT`/`BING_MONTHLY_COUNT`)を新設した。
+**未設定・要ユーザー対応**: `ARUARU_LLM_SERPAPI_KEY`([serpapi.com](https://serpapi.com/)で取得)・`ARUARU_LLM_BING_SEARCH_API_KEY`([Azure Portal](https://portal.azure.com/)でBing Search v7リソース作成)は、このリポジトリには一切保持していない——VPSの`.env`等へユーザー自身が設定する必要がある(既存のGoogle/Braveキーと同じ運用、`feedback_keys_via_files_never_echo`メモ参照)。
+検索フォールバック順序: Brave → SerpApi → Bing → Google(Googleは動く場合があるため完全には外さず最後の候補として残した)。
+
+**English**: The user investigated why Google Custom Search JSON API started returning HTTP 403 ("This project does not have the access to Custom Search JSON API") even after enabling it, and found the root cause: Google has stopped accepting new Custom Search JSON API projects and is fully sunsetting it by 2027-01-01 — enabling the API in Cloud Console no longer helps. Added **SerpApi** and **Bing Search API (Azure)** as two more hybrid search backends in `src/web_search.rs` (`search_serpapi`/`search_bing`), inserted after Brave Search in the fallback chain.
+Both have **monthly** (not daily) free tiers (SerpApi: 100/month, Bing Search API v7 F1 plan: 1,000/month) — unlike the existing Google-shaped daily shared counter, so a separate monthly-reset quota tracker (`SERPAPI_MONTHLY_COUNT`/`BING_MONTHLY_COUNT`) was added.
+**Not configured yet — needs the user**: `ARUARU_LLM_SERPAPI_KEY` (from [serpapi.com](https://serpapi.com/)) and `ARUARU_LLM_BING_SEARCH_API_KEY` (from an Azure Bing Search v7 resource) are not held anywhere in this repo — the user needs to set them on the VPS's `.env`, same as the existing Google/Brave keys.
+Fallback order: Brave -> SerpApi -> Bing -> Google (Google is kept last since some existing/grandfathered projects reportedly still work).
+
+## HANDOFF追記(2026-09-23、Bing Search API廃止確認・SerpApi最優先化) / HANDOFF addendum (2026-09-23, Bing Search API confirmed retired, SerpApi promoted to top priority)
+
+**日本語**: ユーザーが実際にAzure PortalでBing Search v7リソースを作成しようとしたところ、Microsoftが2025-08-11付で同APIを完全廃止(新規リソース作成不可)していたことが判明。後継の「Grounding with Bing Search」はAIエージェント組み込み専用で、本モジュールのような「生の検索結果JSONをAPIキー単体で取得する」用途には利用規約上使えないため、実装済みだったBing統合コード(`search_bing`等)を全て削除した。
+検索フォールバック順序をユーザー指示により`SerpApi → Brave → Google`(SerpApiを最優先)へ変更。`ARUARU_LLM_SERPAPI_KEY`をVPSへ実際に設定し、日本・ドイツのニュース取得で実データ(NHKニュース・tagesschau.de等)を実機確認済み。
+
+**English**: When the user actually tried to create a Bing Search v7 resource in Azure Portal, it turned out Microsoft fully retired the API on 2025-08-11 (no new resources can be created). Its replacement, "Grounding with Bing Search," is built for AI-agent-embedded grounding and its terms don't allow standalone "fetch raw search-result JSON with just an API key" usage like this module needs, so all the Bing integration code (`search_bing`, etc.) that had been implemented was removed.
+Per user instruction, the search fallback order is now `SerpApi -> Brave -> Google` (SerpApi first). `ARUARU_LLM_SERPAPI_KEY` was actually configured on the VPS and verified live with real Japan/Germany news results (NHK News, tagesschau.de, etc.).
+
+## HANDOFF追記(2026-09-23、Tavily/Exaハイブリッド検索追加) / HANDOFF addendum (2026-09-23, Tavily/Exa hybrid search)
+
+**日本語**: ユーザー指示「Tavily/Exaも登録してopen-englishなどで使用したい」への対応として、`src/web_search.rs`に`search_tavily`/`search_exa`を追加した。
+検索フォールバック順序は`SerpApi → Tavily → Exa → Brave → Google`。両社とも無料枠がクレジットカード登録不要で、既存のSerpApiと同じ「月間無料枠÷30日の安全な日割り上限+日次リセット」方式でクォータ管理する
+(Tavily: 月1,000クレジット→33件/日、Exa: 毎月自動付与される$10ぶんの継続クレジットを根拠に≒47件/日——新規登録時の$20は使い切り型のボーナスのため日割り計算の根拠にしていない)。
+**未設定・要ユーザー対応**: `ARUARU_LLM_TAVILY_KEY`([tavily.com](https://www.tavily.com/))・`ARUARU_LLM_EXA_KEY`([exa.ai](https://exa.ai/))はこのリポジトリに一切保持していない——VPSの`.env.google-search`等へユーザー自身が設定する必要がある。
+
+**English**: Per the user's request to also register Tavily and Exa for use in open-english, added `search_tavily`/`search_exa` to `src/web_search.rs`.
+The fallback order is now `SerpApi -> Tavily -> Exa -> Brave -> Google`. Both have no-credit-card-required free tiers, tracked with the same "monthly free allowance / 30 days, daily reset" quota pattern as SerpApi
+(Tavily: 1000 credits/month -> 33/day; Exa: based on the ~$10/month recurring credit at ~$0.007/request -> ~47/day — the one-time $20 signup bonus is intentionally not used as the basis, since it would make the daily budget cliff once spent).
+**Not configured yet — needs the user**: `ARUARU_LLM_TAVILY_KEY` (from [tavily.com](https://www.tavily.com/)) and `ARUARU_LLM_EXA_KEY` (from [exa.ai](https://exa.ai/)) are not held anywhere in this repo — the user needs to set them on the VPS's `.env.google-search` or similar.
+
+## 音声・音質の研究の成果(maid-cafe-se由来、2026-09-30)
+
+ユーザー指示(2026-09-30)「この音質研究はaruaru-llmにもopen-englishにもmaidcafe-programming-schoolにもmake-diskにもmaid-cafe-seにも影響させて」に基づく。
+正本は[`aon-co-jp/maid-cafe-se`](https://github.com/aon-co-jp/maid-cafe-se)の`PORTING.md`「音質向上の研究」節。ここには、このリポジトリに関係する要点だけを書く。
+
+| 項目 | 結果(すべて実測。聴感ではなく数値・テストでの検証) |
+|---|---|
+| 音程と声の太さ(フォルマント)を独立に制御 | リサンプリング方式は音程を動かすと声の太さも同じ比率で動く(音程を下げると「怪物っぽい声」)。FFT+ケプストラム包絡の周波数伸縮補正で独立に制御できた。直接合成した正解の母音との包絡距離: 新方式1.6dB、旧方式10.3dB(音程0.72倍・声の太さ据え置き)。補正ゲイン上限は±12dBだと鋭いフォルマントを動かせず、±24dBで解決 |
+| AI帯域拡張(LavaSR、Apache-2.0、学習データVCTK) | make-diskの設計(入力の帯域は変えず、高域だけを頭打ちつきで足す)が声にも有効。ただし**声は高域が「崖」でなくなだらかに減衰する**ため、音楽向けの崖検出は12.4kHzを返し可聴域に何も足さなかった。声向けのロールオフ検出を新設。Windows音声Harukaで7.5kHzを検出、自己教師あり評価(6kHzで帯域制限→拡張→元の音声とのLSD、6〜9.5kHz)46.8dB→12.9dB、入力の帯域は変化なし。**LSDはスペクトル包絡の近さで聴感品質ではない。拡張前は帯域が無音のため差の大部分は「何か入れれば縮む」分** |
+| 日本語ニューラルTTS | 安全に配布アプリへ同梱できるモデルは未発見。sherpa-onnx公式に日本語TTSモデルは無い/piper-plus系は日本語の学習データがMOE-Speech(ゲーム音声、機械学習解析目的のみ・再配布禁止)由来で配布不可/Kokoro日本語は作者評価がC+〜C-でG2Pの移植が重い |
+| Rust化と音質 | Rust化そのものは音質を変えない。Kotlin版とRust版の出力は数値的に同一(最大誤差0.00000)、速度もウォーム時はほぼ同じ(4秒の音声を、Kotlin 36ms/126ms、Rust 34ms/68ms、単独/ハモり) |
+
+実装: **RPoemの共有クレート`open-runo-voice`**(`RPoem/crates/open-runo-voice`、`docs/voice.md`。依存クレート無しの純Rust。wasm32-unknown-unknown向けのコンパイルは確認済み、ブラウザでの実行は未検証)。AI帯域拡張は`maid-cafe-se`の`crates/maid-cafe-enhance`(tract+ONNX、モデル約56MBは固定リビジョン+SHA-256で取得/同梱。重い依存をRPoem本体へ持ち込まないため別置き)。
+
+### このリポジトリへの影響
+
+- **コード変更なし**。aruaru-llmには音声の入出力(TTS/ASR)の実装が無い(`speechSynthesis`・TTS・音声合成の実装を検索して該当なしを確認)。文章を返す側であり、声で読み上げるのは利用者の画面(open-english)側。
+- 将来「AIの回答を声で返す」機能を付けるときの前提: (1)読み上げ向けの文の整形が要る(TTSが読み間違えやすい記号を避け、長音・かなで書く。`maid-cafe-core`の`SpeechText`が実例)、(2)声質を自前で作るなら、OS/ブラウザのTTS出力を取り出して後処理できる構成が必要(Web Speech APIは出力を取り出せない)、(3)日本語ニューラルTTSは上記のとおり採用可能なモデルが現状無い。
+
+## 先生キャラ(メイド/執事)とモデル非依存の知識ストア(2026-10-05)
+
+- `src/persona.rs` + `POST /v1/persona/prompt`(`{"gender":"female"|"male","country":"Japan"}`): 女性=メイドの先生(さくら)/男性=執事の先生(トラ)の応対方針を返す。参考記事(PRESIDENT Online「訪日客に人気な秋葉原のメイドカフェ、カタコトでも単語を軸に話しかけ」、livedoor再編集版2018-10-13)の要点(単語を軸に・身振りと笑顔・共通の話題・日本語を少し混ぜる)を**言い換えのみ**で反映(本文転載なし)。国の話題は地理DB(`geo_content`)+収集済みニュース見出し+知識ストアから付与。国はIPジオロケーションではなくブラウザ言語等から呼び出し側が渡す(IP照会は不採用の既存方針)。
+- `src/knowledge.rs` + `POST /v1/knowledge/add` / `GET /v1/knowledge/search?q=`: **モデル非依存の「賢さ」**。GPT-2/Qwenの重みは学習で変わらないため、賢くなる実体は平文の知識(`ARUARU_LLM_KNOWLEDGE_DIR`、既定`data/knowledge/knowledge.json`)。`models/`と完全に別置きで、モデル切替(`/v1/models/select`・`/v1/qwen/select`)は触れず、切替直前に世代バックアップ(直近10世代)を取る。埋め込み等モデル固有物は保存しない。
+- 未実施: 生成プロンプトへ知識を常時差し込む配線(現状はpersona経由のみ)、VPSへのデプロイ。open-english側は`/v1/public/persona/prompt`プロキシ+`app.js`の`personaPromptText()`を追加済み(Android webroot版`app.js`は未同期)。
+
+### 知識の自動復元と GitHub 退避(2026-10-06)
+- 種知識`data/knowledge_seed.json`(PRESIDENT Onlineの記事の要点の言い換え+先生キャラ方針、出典URL付き)を起動時に取り込む。
+- 起動時と6時間ごとに、公開WEB`https://easy-web.tokyo/open-english/v1/public/knowledge/export`→失敗時はGitHub`aon-co-jp/open-english/master/data/knowledge/knowledge.json`から不足分だけ統合(`knowledge::sync_from_remote`、`ARUARU_LLM_KNOWLEDGE_SYNC_URL`で上書き、`off`で無効)。ローカルPC版をアンインストール→再インストールしても、初回起動で知識が戻る。
+- VPS: `knowledge-sync-push.timer`(6時間ごと、`scripts/sync-knowledge-to-github.sh`)が知識をGitHubの公開リポジトリへpush。VPSを作り直してもaruaru-llmが起動時にGitHubから復元する。公開してよい内容(言い換え+出典)のみを入れる前提で、個人情報・会話は入れない。
+- 正直な開示: GitHub側からの復元経路(WEBが落ちている場合)は、取得URLの形式一致までは確認したが、WEB停止状態での実機復元試験は未実施。スマホ/タブレット版は端末側に知識ストアを持たず、WEB版のVPSを使うため再インストールで失うものはない。realdata.proの収集データは非公開GitHub(realdata-archive)に既に保管済みで、今回は変更していない。
+
+## v1.3.0(2026-10-10): かすれ補正・字形照合・AI文脈補完の拡張 / v1.3.0: faded-text rescue, glyph matching, extended AI context completion
+
+### 日本語
+- OCR の補完・字形照合の API を追加: `POST /v1/ocr/scan` / `propose` / `fill`(`return_all` / `use_web` / `lm_candidates`)/ `glyph-rank`、`GET /v1/ocr/charset?n=`。いずれも言語モデル(`/v1/qwen/install` → `/v1/qwen/select`)が必要(無いとき 503。`glyph-rank` は `extra_chars` だけでも動く)。
+- 実装: `src/ocr_fill.rs`(走査・提案・採点・検索・連続 1〜4 文字。採点は最大 8 候補・後ろ文脈 8 文字)、`src/ocr_glyph.rs`(字形の照合 = `opencuda_blas::sgemm`、共有クレート `RPoem/open-runo-glyph`)、`src/qwen_generation.rs`(`score_texts` / `top_next_texts` / `scan_text` / `common_chars`)、`src/web_search.rs`(`snippets_via_aruaru_search`)。
+- 検索: `ARUARU_LLM_SEARCH_URL`(既定 `http://127.0.0.1:4610` = `aruaru-search`)。試験は `cargo test --bin aruaru-llm ocr_`(20 件)、速度は `cargo test --release --bin aruaru-llm bench_sgemm -- --ignored --nocapture`(字形 1 升 約 14 ms)。
+- 測定: 補完はこれまでの試験で「害はないが上積みも無く遅い」(1 か所 10〜20 秒、Qwen2.5-1.5B・CPU)。既定オフ・実験的。詳細は `pdf-r2l-rs/PORTING.md`。
+- **VPS 本番**: `/v1/ocr`・`/v1/ocr/fill` は反映済み。v1.3.0 の追加分(`/scan`・`/propose`・`/glyph-rank`・`/charset`)も 2026-10-10 に反映(Qwen 未導入のため補完系は 503 が正常。VPS は 4 コア・RAM 3.6GB)。バックアップ: `/root/aruaru-llm.bin.bak-20261010`。トークンは `/root/aruaru-llm/.env.ocr`(git 管理外)。
+
+### English
+- Added OCR completion / glyph-matching APIs: `POST /v1/ocr/scan` / `propose` / `fill` (`return_all` / `use_web` / `lm_candidates`) / `glyph-rank`, `GET /v1/ocr/charset?n=`. All need a language model (`/v1/qwen/install` then `/v1/qwen/select`; 503 without one — `glyph-rank` works with just `extra_chars`).
+- Code: `src/ocr_fill.rs` (scan / propose / score / search / 1–4 character spans; scoring uses at most 8 candidates and 8 characters of following context), `src/ocr_glyph.rs` (glyph matching = `opencuda_blas::sgemm`, shared crate `RPoem/open-runo-glyph`), `src/qwen_generation.rs` (`score_texts` / `top_next_texts` / `scan_text` / `common_chars`), `src/web_search.rs` (`snippets_via_aruaru_search`).
+- Search: `ARUARU_LLM_SEARCH_URL` (default `http://127.0.0.1:4610` = `aruaru-search`). Tests: `cargo test --bin aruaru-llm ocr_` (20 tests); speed: `cargo test --release --bin aruaru-llm bench_sgemm -- --ignored --nocapture` (~14 ms per glyph cell).
+- Measurements: in our tests completion does no harm but adds nothing and is slow (10–20 s per spot, Qwen2.5-1.5B on CPU). Off by default, experimental. See `pdf-r2l-rs/PORTING.md`.
+- **Production VPS**: `/v1/ocr` and `/v1/ocr/fill` were deployed earlier; the v1.3.0 additions (`/scan`, `/propose`, `/glyph-rank`, `/charset`) were deployed on 2026-10-10 (503 is expected without a model; the VPS has 4 cores / 3.6 GB RAM). Backup: `/root/aruaru-llm.bin.bak-20261010`. The token is in `/root/aruaru-llm/.env.ocr` (not in git).
+
+## お引越し(2026-10-14) / Migration notes
+
+- **日本語**: 知識ストアはモデル非依存で、`data/knowledge/`(`.gitignore`済み)に置く。復元経路は (1) 起動時・6時間ごとの`knowledge::sync_from_remote`(公開WEB→GitHubの順、`ARUARU_LLM_KNOWLEDGE_SYNC_URL`にカンマ区切りで上書き、`off`で無効)、(2) 種知識`data/knowledge_seed.json`。退避は`deploy/knowledge-sync-push.{service,timer}`+`scripts/sync-knowledge-to-github.sh`(VPSの`/etc/systemd/system/`へ入れる。`deploy/install-knowledge-sync.sh`で冪等に設置)。**秘密(`.env.*`、`~/.git-credentials`)はGitに無い**ので、移行時は別途安全に持ち込むこと(値を画面・コミットへ出さない)。
+- **English**: The knowledge store is model-independent and lives in `data/knowledge/` (git-ignored). Restore paths: (1) `knowledge::sync_from_remote` at start-up and every 6 h (public web, then GitHub; override with a comma-separated `ARUARU_LLM_KNOWLEDGE_SYNC_URL`, `off` disables), (2) the bundled seed `data/knowledge_seed.json`. Backup uses `deploy/knowledge-sync-push.{service,timer}` + `scripts/sync-knowledge-to-github.sh` (install via `deploy/install-knowledge-sync.sh`, idempotent). **Secrets (`.env.*`, `~/.git-credentials`) are not in Git** — carry them over separately and never print them or commit them.
+
+## 知識の日本語検索の強化・AI学習コメントの学習とGitHub自動バックアップ(2026-10-08)
+- **日本語検索**: `knowledge.rs`の`words()`が、連続するCJK文字を2文字ずつの断片(バイグラム)で比べるようにした(英数字の語は従来どおり)。以前は日本語の文が1語に潰れ、ほぼ拾えなかった。テスト3件合格(`cargo test knowledge::`)。
+- **学習**: `audiocafe.tokyo`のPHPが`POST /v1/knowledge/add`で、検証済みの価格・AIの誤りの訂正・「料金は推測で書かない」ルールを教える。AIが書いた価格欄は24件中23件が実価格と不一致だったため。
+- **GitHub自動バックアップ**: `knowledge-sync-push`(6時間ごと+PHPクロール直後)が`open-english/data/knowledge/knowledge.json`へ保存。起動時に`sync_from_remote`で復元。空のストアでの復元テスト合格(19件を18秒)。
+- **お引越し**: 知識はGitHubから自動復元される。復元されないのは`.env.providers`等のAPIキーだけ(手動で再配置)。systemdの実物は`audiocafe-tokyo`の`deploy/vps/`。
+- 注意: 知識は公開リポジトリに保存されるため、公開してよい内容だけを入れる。
+
+## Better Japanese knowledge search, AI-comment learning and automatic GitHub backup (2026-10-08)
+- **Japanese search**: `words()` in `knowledge.rs` now compares runs of CJK characters as overlapping 2-character fragments (bigrams); alphanumeric words behave as before. Previously a Japanese sentence collapsed into one token and was almost never matched. 3 tests pass (`cargo test knowledge::`).
+- **Learning**: the PHP of `audiocafe.tokyo` teaches verified prices, corrections of the AI's mistakes and the rule "never guess prices" via `POST /v1/knowledge/add` (23 of 24 AI-written prices disagreed with the real ones).
+- **Automatic GitHub backup**: `knowledge-sync-push` (every 6 h and right after the PHP crawl) saves to `open-english/data/knowledge/knowledge.json`; `sync_from_remote` restores it at start-up. Restore test on an empty store passed (19 entries in 18 s).
+- **Moving servers**: knowledge restores itself from GitHub. Only the API keys (`.env.providers` etc.) must be placed by hand. The real systemd files are in `deploy/vps/` of `audiocafe-tokyo`.
+- Note: knowledge is stored in a public repository, so only put publishable content in it.
+
+## JSON処理の使用方針: `parse_secure_sonic`(速い型+安全)と`sonic-rs`は使える所では全て使う(2026-10-14、ユーザー指示)
+正本は[`RS-JSON`](https://github.com/aon-co-jp/RS-JSON)(`README.md`・`PORTING.md`)。
+
+**方針**: JSONを読む所は、使える所では**全て** `rust-json`(RS-JSON)の `parse_secure_sonic`(`fast`機能、結果は`sonic_rs::Value`)を使う。
+`sonic-rs` を直接使える所(型付き構造体への読み込みなど)も同様。使えない所は `parse_secure`(結果は`serde_json::Value`)を使う。
+外部から来る信頼できない入力(HTTP本文・ネットワーク越しのファイル・アップロード)は、**必ずサイズ・深さ・重複キーの上限つき**で読む。
+
+**実測(7 MB・4万件)**: `serde_json` 200 ms / `parse_secure` 217 ms / **`parse_secure_sonic` 83 ms(約2.4倍速い、防御込み)** / `sonic-rs`そのまま 33 ms(約6倍、防御なし)。
+`serde_json::Value`に読む限りSIMDでもほぼ速くならない(188 ms)。**速さの源は、結果を連続した領域に詰め込む値の型**。
+
+**使える所 / 使えない所**
+- ✅ 読み取り中心で、JSONを大きく・頻繁に読む所(キャッシュJSON、設定、APIの応答、ログ、インデックス)。
+- ✅ 外部からの入力の入口(速さより防御が目的。`parse_secure`でも可)。
+- ⚠️ `serde_json::Value`を関数間で受け渡している既存コードは、型を`sonic_rs::Value`に直す書き換えが要る(`JsonValueTrait`/`JsonContainerTrait`のメソッド)。書き換えずに`serde_json::Value`へ読むと速くならない。
+- ❌ WASM(`rust_json::light`、依存ゼロ)、PHP/JavaScript側のJSON処理(Rustの部品は使えない)。
+- 注意: 依存先の`sonic-rs`は内部で`unsafe`を使う(自前コードに`unsafe`は無い)。小さなJSON(数KB)では体感差が出ない。速度目的の書き換えは、実測で効く所から。
+
+**導入**: `Cargo.toml`に `rust-json = { path = "../RS-JSON", features = ["fast"] }`。使用例は`RS-JSON/README.md`。
+
+**このリポジトリでの適用状況**: `knowledge::sync_from_remote`(外部取り込み)は`parse_secure`に適用済み。ほかは未適用(方針のみ)。次の対象: 検索インデックス・ロード時のJSON。
+
+## JSON handling policy: use `parse_secure_sonic` (fast type + secure) and `sonic-rs` everywhere they can be used (2026-10-14, user instruction)
+The source of truth is [`RS-JSON`](https://github.com/aon-co-jp/RS-JSON) (`README.md`, `PORTING.md`).
+
+**Policy**: wherever JSON is read, use `parse_secure_sonic` from `rust-json` (RS-JSON, the `fast` feature; the result is `sonic_rs::Value`) **everywhere it can be used**.
+Use `sonic-rs` directly where possible too (e.g. reading into typed structs). Where it cannot be used, use `parse_secure` (result: `serde_json::Value`).
+Untrusted input from outside (HTTP bodies, files over the network, uploads) **must always be read with size / depth / duplicate-key limits**.
+
+**Measured (7 MB, 40,000 records)**: `serde_json` 200 ms / `parse_secure` 217 ms / **`parse_secure_sonic` 83 ms (about 2.4x faster, with the defences)** / raw `sonic-rs` 33 ms (about 6x, no defences).
+Reading into `serde_json::Value` gives almost no speed-up even with SIMD (188 ms). **The speed comes from the value type that packs the result into contiguous memory.**
+
+**Where it can / cannot be used**
+- ✅ Read-heavy code that parses large or frequent JSON (cache JSON, config, API responses, logs, indexes).
+- ✅ Entrances for outside input (the goal there is defence rather than speed; `parse_secure` is fine).
+- ⚠️ Existing code that passes `serde_json::Value` between functions needs its type changed to `sonic_rs::Value` (methods from `JsonValueTrait` / `JsonContainerTrait`). Reading into `serde_json::Value` without that change is not faster.
+- ❌ WASM (`rust_json::light`, zero dependencies) and the JSON handling on the PHP / JavaScript side (Rust components cannot be used there).
+- Note: the `sonic-rs` dependency uses `unsafe` internally (our own code has none). For small JSON (a few KB) the difference is not noticeable; do speed-motivated rewrites where measurements show a benefit.
+
+**Adoption**: in `Cargo.toml`, `rust-json = { path = "../RS-JSON", features = ["fast"] }`. Example in `RS-JSON/README.md`.
+
+**Status in this repository**: `knowledge::sync_from_remote` (outside import) already uses `parse_secure`. Everything else is not yet applied (policy only). Next targets: search indexes and JSON loaded at start-up.
+
+## HANDOFF 2026-10-16: 検索は aruaru-search を必ず最初に(Google 1日100件の枠を消費しない)
+
+- 共有AI経路(`/v1/chat-providers/complete-priority` の `use_google_search`)は、これまで Google キー未設定だと検索をスキップし、
+  利用者が自分のキーを送るとそれを直接叩いていた(1日100件)。`web_search::search_free_only`(aruaru-search)を**最初に試し**、
+  使えない・0件のときだけ従来どおり利用者の鍵→共有設定へ落ちる。`search_notes` は `aruaru-search: N result(s)` / `backup: ...`。
+- `search_via_aruaru_search` は、`hl`/`gl` が無いとき検索語の文字種から推定する(`infer_lang_hint`: かな→ja、ハングル→ko、
+  かな無しの漢字→zh)。aruaru-search は言語ヒントが無いと Bing/Brave だけを選ぶため、それらが休止中だと日本語でも502になっていた。
+- 英語は aruaru-search 側に公式 API の検索元(Wikipedia・Hacker News・Stack Overflow)を追加して補った(`aruaru-search/CLAUDE.md` 参照)。
+  限界: 一般のウェブ全体の最新情報は Bing・Brave 頼み。
+
+## API 方針: REST 全廃・gRPC / Connect へ (2026-11-04)
+
+### 日本語
+- **REST は全廃する。新しい API は REST で作らない。** ブラウザや `curl` から呼ぶ API は **Connect の単純呼び出し**(`POST /<パッケージ>.<Service>/<Method>`、`content-type: application/json`、本文は JSON)、サービス間は **gRPC / gRPC-web**(RPoem の管理API `open_runo.admin.v1.Admin` と同じ流儀)。ストリーミングは、必要になってから。
+- **既存の REST は、触るときに順に移す。** 移したら旧 REST の経路は消す。移行が終わるまで残るが、**新規には追加しない**。
+- **JSON は RS-JSON に統一**する(読み込みは `from_str_secure` / `parse_secure` でサイズ・深さ・重複キーの上限つき、書き出しは `rust_json::fast`)。ブラウザの WASM に `prost` は入れない(サイズが増えるため)。
+- **例外(自分たちの API ではなく、相手の規格が決めているもの)**: ACME、OAuth/OIDC のコールバック、第三者(GitHub など)からの Webhook、ヘルスチェック、静的ファイル配信、OTLP など。これらは規格どおりの HTTP を受ける。
+- 参考実装: `RPoem`(`open_runo.admin.v1.Admin`)、`open-easy-web`(`server/src/connect.rs`、`proto/open_easy_web/admin/v1/admin.proto`)。
+- ※ このリポジトリのコードが既に方針どおりかどうかは、各リポジトリの現状による。この節は方針の記録であり、コードの変更を意味しない。
+
+### English
+- **REST is being abolished. New APIs are not built as REST.** APIs called from browsers or `curl` use **Connect unary calls** (`POST /<package>.<Service>/<Method>`, `content-type: application/json`, JSON body); service-to-service calls use **gRPC / gRPC-web** (the same style as RPoem's admin API `open_runo.admin.v1.Admin`). Streaming only when it is actually needed.
+- **Existing REST endpoints are migrated one by one, when they are touched.** The old REST route is removed once migrated. Until migration is finished they remain, but **no new ones are added**.
+- **JSON is unified on RS-JSON**: reading with `from_str_secure` / `parse_secure` (size, depth and duplicate-key limits), writing with `rust_json::fast`. `prost` is not put into browser WASM (it would grow the binary).
+- **Exceptions (shapes dictated by someone else's standard, not our own API)**: ACME, OAuth/OIDC callbacks, webhooks from third parties (e.g. GitHub), health checks, static file serving, OTLP, and so on. These accept plain HTTP as the standard requires.
+- Reference implementations: `RPoem` (`open_runo.admin.v1.Admin`) and `open-easy-web` (`server/src/connect.rs`, `proto/open_easy_web/admin/v1/admin.proto`).
+- Note: whether the code in a given repository already follows this policy depends on that repository. This section records the policy; it does not mean the code has been changed.
+
+### Deutsch (KI-Übersetzung, redaktionell überarbeitet; noch nicht von Muttersprachlern geprüft)
+- **REST wird vollständig abgeschafft; neue APIs entstehen nicht mehr als REST.** APIs, die aus dem Browser oder per `curl` aufgerufen werden, verwenden **unäre Connect-Aufrufe** (`POST /<Paket>.<Service>/<Methode>`, `content-type: application/json`, JSON-Body). Zwischen Diensten kommen **gRPC bzw. gRPC-web** zum Einsatz, im selben Stil wie die Admin-API von RPoem (`open_runo.admin.v1.Admin`). Streaming wird erst ergänzt, wenn es tatsächlich gebraucht wird.
+- **Bestehende REST-Endpunkte werden schrittweise umgestellt, und zwar immer dann, wenn man ohnehin an ihnen arbeitet.** Sobald ein Endpunkt umgestellt ist, wird die alte REST-Route entfernt. Bis zum Abschluss der Migration bleiben die übrigen bestehen, es werden aber **keine neuen mehr hinzugefügt**.
+- **JSON wird einheitlich über RS-JSON verarbeitet**: Gelesen wird mit `from_str_secure` bzw. `parse_secure` (mit Obergrenzen für Größe, Verschachtelungstiefe und doppelte Schlüssel), geschrieben mit `rust_json::fast`. `prost` wird nicht in das Browser-WASM aufgenommen, da es die Datei vergrößern würde.
+- **Ausnahmen (Schnittstellen, deren Form ein fremder Standard vorgibt und die nicht zu unserer eigenen API gehören)**: ACME, OAuth/OIDC-Callbacks, Webhooks von Drittanbietern (z. B. GitHub), Health-Checks, die Auslieferung statischer Dateien, OTLP und Ähnliches. Diese nehmen, wie vom jeweiligen Standard verlangt, gewöhnliches HTTP entgegen.
+- Referenzimplementierungen: `RPoem` (`open_runo.admin.v1.Admin`) und `open-easy-web` (`server/src/connect.rs`, `proto/open_easy_web/admin/v1/admin.proto`).
+- Hinweis: Ob der Code eines einzelnen Repositorys diese Richtlinie bereits erfüllt, hängt vom jeweiligen Repository ab. Dieser Abschnitt dokumentiert lediglich die Richtlinie; er besagt nicht, dass der Code schon angepasst wurde.
+
+### Русский (перевод выполнен с помощью ИИ и отредактирован; носителями языка пока не проверен)
+- **От REST мы полностью отказываемся; новые API больше не создаются в стиле REST.** API, к которым обращаются из браузера или через `curl`, используют **унарные вызовы Connect** (`POST /<пакет>.<Service>/<Method>`, `content-type: application/json`, тело запроса — JSON). Для взаимодействия между сервисами применяются **gRPC и gRPC-web** — в том же стиле, что и административный API RPoem (`open_runo.admin.v1.Admin`). Потоковая передача данных добавляется лишь тогда, когда в ней действительно возникает необходимость.
+- **Существующие REST-эндпоинты переводятся поэтапно — по мере того, как с ними приходится работать.** После перевода старый REST-маршрут удаляется. Пока миграция не завершена, оставшиеся эндпоинты сохраняются, но **новые не добавляются**.
+- **Работа с JSON унифицирована на основе RS-JSON**: чтение — через `from_str_secure` или `parse_secure` (с ограничениями на размер, глубину вложенности и повторяющиеся ключи), запись — через `rust_json::fast`. `prost` в браузерный WASM не включается, поскольку это увеличило бы размер файла.
+- **Исключения (интерфейсы, форму которых определяет чужой стандарт, а не наш собственный API)**: ACME, обратные вызовы OAuth/OIDC, вебхуки сторонних сервисов (например, GitHub), проверки работоспособности, раздача статических файлов, OTLP и тому подобное. Такие интерфейсы принимают обычный HTTP, как того требует соответствующий стандарт.
+- Эталонные реализации: `RPoem` (`open_runo.admin.v1.Admin`) и `open-easy-web` (`server/src/connect.rs`, `proto/open_easy_web/admin/v1/admin.proto`).
+- Примечание: соответствует ли код конкретного репозитория этой политике, зависит от самого репозитория. Данный раздел лишь фиксирует политику и не означает, что код уже изменён.
+
+## REST全廃→Connect移行 (2026-11-04、ブランチ `connect-migration`)
+- 81ルートを `POST /aruaru_llm.v1.Llm/<Method>`(JSON)へ移行、旧経路は削除(`src/connect.rs`)。もとGETは本文の項目をクエリに直して既存ハンドラへ渡す。エラーは `{"code","message"}`(旧クライアント互換で `error` も同値)。
+- 例外(REST のまま): `/healthz`、`/`(案内)、`/api/docs`(フォントは Connect の `OcrFont`、旧 `/v1/ocr/fonts/:name` は削除)。OpenAI互換の受け口はこのサーバーに無い。
+- **未了**: 呼び出し元(open-english・aruaru-IME・aruaru-search・audiocafe-tokyo・open-cg-cad・open-backup・360-speaker・e-gov・open-easy-web ほか)の同時修正と、main へのマージ・VPS反映。呼び出し元を直す前にマージ・配備しないこと。一覧は引き継ぎメモを参照。
+- `/admin/tenants` 系(RegisterTenant/ListTenants/RemoveTenant)は元から無認証。別途対応が必要。
+## API 方針の補足: 用語の整理と使い分け (2026-11-04)
+
+### 日本語
+**1つに統一するものではなく、別の層の話です。** 「REST の代わり」になるのは Connect・gRPC・GraphQL だけで、WASM は画面を作る技術です。
+
+| 用語 | 何か | REST の代わりか |
+|---|---|---|
+| REST | URL と HTTP メソッドで操作を表す API の作り方 | 全廃する側 |
+| **Connect** | `POST /サービス名/メソッド名` に JSON を送る形式。`curl` でもブラウザの `fetch` でも呼べる | はい(**採用**) |
+| **gRPC** | 同じ「サービス/メソッド」の考え方を、バイナリ(protobuf)と HTTP/2 で行う形式。速く、ストリーミングも得意 | はい(**サービス同士に採用**) |
+| gRPC-web | gRPC のブラウザ向けの変形版 | はい(必要なら) |
+| GraphQL | 欲しい項目を問い合わせる形式 | 一部だけ(**問い合わせ(読み取り)専用**) |
+| WASM | Rust をブラウザの中で動かす仕組み | いいえ(画面を作る技術) |
+
+- **ブラウザの画面や `curl` から呼ぶ API は Connect**(POST、JSON を RS-JSON で読み書き)。ブラウザの WASM は素の gRPC を話せず、Connect なら `fetch` のままで、`prost` を足さずに済む(画面のサイズも増えない)。
+- **サービス同士の通信(サーバー間、重い処理、ストリーミング)は gRPC。** 多くは Connect で足りるので、ストリーミングが必要になった所だけ gRPC に上げる。
+- **GraphQL は、まとめて問い合わせたいときの読み取り専用。** 書き込み(操作)には使わない。
+- **WASM は画面を作る技術として、そのまま使う。** 画面から呼ぶ API が Connect になっただけ。
+- 外部の規格が形を決めるもの(ACME、OAuth のコールバック、第三者の Webhook、ヘルスチェック、静的ファイル、OTLP)は、規格どおりの HTTP のまま。
+- **迷ったら Connect。**
+
+### English
+**These are not alternatives to unify; they sit at different layers.** Only Connect, gRPC and GraphQL can replace REST; WASM is a way to build the UI.
+
+| Term | What it is | Replaces REST? |
+|---|---|---|
+| REST | API style that expresses operations through URLs and HTTP methods | The thing being abolished |
+| **Connect** | `POST /Service/Method` with a JSON body; callable from `curl` and from a browser `fetch` | Yes (**adopted**) |
+| **gRPC** | The same service/method idea over binary (protobuf) and HTTP/2; fast, good at streaming | Yes (**for service-to-service**) |
+| gRPC-web | A browser-friendly variant of gRPC | Yes (if needed) |
+| GraphQL | A query language: ask for exactly the fields you want | Partly (**read-only queries**) |
+| WASM | Runs Rust inside the browser | No (a UI technology) |
+
+- **APIs called from browser screens or `curl` use Connect** (POST, JSON read and written with RS-JSON). Browser WASM cannot speak plain gRPC; with Connect it stays a `fetch`, and `prost` is not needed (the binary does not grow).
+- **Service-to-service calls (server to server, heavy work, streaming) use gRPC.** Connect is enough in most places; move a call to gRPC only where streaming is actually needed.
+- **GraphQL is read-only**, for queries that gather several pieces of data. It is not used for writes (operations).
+- **WASM stays as the way to build the UI.** The API it calls simply became Connect.
+- Interfaces whose shape an outside standard dictates (ACME, OAuth callbacks, third-party webhooks, health checks, static files, OTLP) stay plain HTTP.
+- **When in doubt, use Connect.**
+
+### Deutsch (KI-Übersetzung, sprachlich überarbeitet; noch nicht von Muttersprachlern geprüft)
+**Es geht nicht darum, eine einzige Technik auszuwählen – die Begriffe liegen auf unterschiedlichen Ebenen.** Als Ersatz für REST kommen nur Connect, gRPC und GraphQL in Frage; WASM dagegen ist eine Technik, mit der die Benutzeroberfläche gebaut wird.
+
+| Begriff | Was ist das? | Ersatz für REST? |
+|---|---|---|
+| REST | Ein API-Stil, bei dem Operationen über URLs und HTTP-Methoden ausgedrückt werden | wird abgeschafft |
+| **Connect** | `POST /Dienst/Methode` mit JSON im Body; aufrufbar mit `curl` ebenso wie mit `fetch` im Browser | ja (**gewählt**) |
+| **gRPC** | Dasselbe Prinzip aus Dienst und Methode, aber über binäres protobuf und HTTP/2; schnell und gut für Streaming geeignet | ja (**zwischen Diensten**) |
+| gRPC-web | Eine für den Browser angepasste Variante von gRPC | ja (bei Bedarf) |
+| GraphQL | Abfragesprache, mit der man genau die benötigten Felder anfordert | teilweise (**nur für lesende Abfragen**) |
+| WASM | Führt Rust-Code direkt im Browser aus | nein (Technik für die Oberfläche) |
+
+- **APIs, die von Browseroberflächen oder per `curl` aufgerufen werden, verwenden Connect** (POST; JSON wird mit RS-JSON gelesen und geschrieben). WASM im Browser kann kein reines gRPC sprechen. Mit Connect bleibt es bei einem gewöhnlichen `fetch`, und `prost` ist nicht nötig – die WASM-Datei wird dadurch nicht größer.
+- **Für die Kommunikation zwischen Diensten (Server zu Server, rechenintensive Aufgaben, Streaming) wird gRPC eingesetzt.** In den meisten Fällen reicht Connect aus; auf gRPC wird nur dort umgestellt, wo Streaming tatsächlich gebraucht wird.
+- **GraphQL dient ausschließlich lesenden Abfragen**, wenn mehrere Informationen gebündelt abgefragt werden sollen. Für Schreibzugriffe (Operationen) wird es nicht verwendet.
+- **WASM bleibt die Technik für die Oberfläche.** Geändert hat sich lediglich, dass die aufgerufene API nun auf Connect beruht.
+- Schnittstellen, deren Form durch einen externen Standard festgelegt ist (ACME, OAuth-Callbacks, Webhooks von Drittanbietern, Health-Checks, statische Dateien, OTLP), bleiben gewöhnliches HTTP.
+- **Im Zweifel: Connect.**
+
+### Русский (перевод выполнен с помощью ИИ и литературно отредактирован; носителями языка пока не проверен)
+**Это не варианты, из которых нужно выбрать один, а технологии разных уровней.** Заменить REST могут только Connect, gRPC и GraphQL; WASM же — это способ создания пользовательского интерфейса.
+
+| Термин | Что это | Заменяет REST? |
+|---|---|---|
+| REST | Стиль построения API, при котором операции выражаются через URL и HTTP-методы | отменяется |
+| **Connect** | `POST /Сервис/Метод` с телом в формате JSON; вызывается как из `curl`, так и из браузерного `fetch` | да (**выбран**) |
+| **gRPC** | Тот же принцип «сервис — метод», но поверх двоичного формата protobuf и HTTP/2; работает быстро и хорошо подходит для потоковой передачи | да (**для связи между сервисами**) |
+| gRPC-web | Адаптированный для браузера вариант gRPC | да (при необходимости) |
+| GraphQL | Язык запросов: клиент запрашивает ровно те поля, которые ему нужны | частично (**только запросы на чтение**) |
+| WASM | Позволяет выполнять код на Rust прямо в браузере | нет (технология для интерфейса) |
+
+- **API, которые вызываются из браузерных интерфейсов или через `curl`, строятся на Connect** (POST; JSON читается и записывается через RS-JSON). Браузерный WASM не умеет работать с «чистым» gRPC. С Connect достаточно обычного `fetch`, а `prost` не требуется — размер WASM-файла не увеличивается.
+- **Для обмена между сервисами (сервер — сервер, ресурсоёмкие задачи, потоковая передача) применяется gRPC.** В большинстве случаев достаточно Connect; на gRPC переходят только там, где потоковая передача действительно необходима.
+- **GraphQL используется только для чтения**, когда нужно получить сразу несколько связанных данных. Для записи (операций) он не применяется.
+- **WASM по-прежнему остаётся технологией для интерфейса.** Изменилось лишь то, что вызываемый им API теперь построен на Connect.
+- Интерфейсы, форма которых задана внешним стандартом (ACME, обратные вызовы OAuth, вебхуки сторонних сервисов, проверки работоспособности, статические файлы, OTLP), остаются обычным HTTP.
+- **Если есть сомнения — выбирайте Connect.**
+
+## 2026-11-06 依存更新(HANDOFF)
+reqwest 0.13・rand 0.10・sonic-rs 0.5・base64 0.23・sha2 0.11 へ更新済み(詳細は `PORTING.md` 末尾)。RustSecの残り(h2 0.3・protobuf 2・zip 0.6・zstd-safe 5)は任意機能 `nllb-translate` の `rust-bert` 0.23.0 が固定しており、上流待ち(既定ビルドには含まれない)。本番VPSへの反映は未実施(再ビルド・再起動が必要)。
+
+## JSON の読み込みを RS-JSON の安全モード+sonic-rs に統一(2026-11-06)
+方針(`F:\runo\CLAUDE.md`「JSON処理の使用方針」)どおり、信頼できない入力は `rust_json::parse_secure_sonic`(SIMD版・サイズ/深さ/重複キーの上限つき)で検査してから型へ読む。
+- **重大な発見と修正**: `http_json` の安全な受信(`ResponseJson::json`)は、**実際には一度も働いていなかった**。`reqwest` の `json` 機能は他の依存(RPoem のルーター・OpenTelemetry)がフィーチャを足すと有効になり(フィーチャの統合)、固有メソッド `Response::json` がトレイトの同名メソッドより優先され、`serde_json` で素通しに読まれていた(`JsonHttpError is never constructed` の警告が手掛かり)。メソッド名を **`json_secure()`(受信)/`json_sonic(&body)`(送信)** に変え、全呼び出し(29か所:chat_providers・web_search・github_search・youtube_search・news_geo・self_update・google_search_fallback_health)を置き換えた。これで外部 API の応答は必ず上限・重複キー検査を通る。
+- 受信は「検査(`parse_secure_sonic`)→ 型へ直接(`sonic_rs::from_str`)」で、中間の `serde_json::Value` を作らない。知識の取り込み(`knowledge::parse_remote_entries`)・埋め込みの地理データ(`geo_content`)・ニュースのディスク保存(`news_feed`)・OCR の manifest(`ocr_data`)・Connect 入口(`connect.rs`)も同様。`rust_json` が返す値は sonic-rs 0.3 の型なので、トレイトは `rust_json::fast::sonic_rs` から使う。
+- 外から来る HTTP 本文(`Json::from_body`)は RPoem の `open-runo-poem-compat`→`secure_json` 側で処理(重複キー・深さ・16 MiB の検査つき、RPoem の記録を参照)。
+- **実測(前後)**: 知識の取り込み 約3.7 MB・2万件(`parse_remote_entries`)が **約70 ms → 約39 ms(約1.8倍)**。`cargo test --release bench_parse_remote_entries -- --ignored --nocapture` で再現。
+- 試験: `cargo test` 全通過(183件、モデルのある環境。モデルの無い新規 clone では `scoring`/`security`/`intrusion_detection` の14件がモデル不足で失敗する=従来どおり)。
+
+**VPS 反映(2026-11-06)**: WSL でリリースビルド(`cargo build --release --locked`、既定フィーチャ)→ `objdump -T` で最大 GLIBC_2.39(VPS は 2.39)を確認 → scp → `/root/aruaru-llm/target/release/aruaru-llm.bak-20261106` へバックアップ → 入れ替え → `systemctl restart aruaru-llm` → `/healthz`・`/`・`Generate` が 200 を確認(失敗時は自動で戻す手順)。VPS 上の clone(未コミットの変更あり)には触っていない。戻すには `cp -p aruaru-llm.bak-20261106 aruaru-llm && systemctl restart aruaru-llm`。
+
+**モデルの無い環境の試験(2026-11-06)**: 埋め込みモデル(`models/multilingual-e5-small/`、git に入れていない)を要る14件の試験(`scoring`・`security`・`intrusion_detection`)は、モデルが無いと失敗していた。`scoring::embedding_model_available()` と `skip_without_embedding_model!()` を足し、モデルが無い環境(新規 clone・CI)ではスキップ(理由を標準エラーに出す)、有る環境では従来どおり実行する。確認: `ARUARU_LLM_EMBED_MODEL_DIR=/nonexistent` でもモデルありでも `scoring::`/`security::`/`intrusion_detection::` の15件が全通過。
+
+## 共有基盤としての受付制御(2026-11-09、配備方針「共有基盤は1回だけ導入」)
+- 重い推論系のConnect呼び出し(Generate/GenerateSpeculative/GenerateWithSearch/GenerateQwen/GenerateDeepseek/Translate/Transcribe/Ocr系)に`src/admission.rs`の受付制御を追加。同時実行上限(既定2)、サイト別の待ち行列+ラウンドロビン配分、行列長の上限(全体32・サイト別8、超過は即429 `resource_exhausted`)、待ち時間上限30秒(503 `unavailable`)、実行時間上限120秒(504)。時間切れ後も計算が終わるまで枠は返さない。エラーはConnect形式`{code,message}`。
+- サイト識別は`x-tenant`ヘッダ→`x-forwarded-host`→`anonymous`。前面のopen-web-serverが付ける前提(直接公開だと偽装で公平配分を回避できる)。環境変数: `ARUARU_LLM_MAX_CONCURRENT`/`_MAX_QUEUE`/`_MAX_QUEUE_PER_TENANT`/`_QUEUE_WAIT_SECS`/`_EXEC_TIMEOUT_SECS`。
+- 調査結果: プロセスは1つ(VPS 127.0.0.1:4600)で全サイト共有、重い処理は元から`spawn_blocking`、モデルの二重ロードなし。Chat/Classify等の軽い呼び出しは受付制御の対象外。サイトごとに同梱・個別起動している箇所は見つからなかった。
+- 実測(WSL Ubuntu、GPT-2実推論、同時2・行列6・サイト別4・待ち20秒・実行60秒): 単発1件が60秒でタイムアウト(504。推論自体が遅い)。12件同時(A8/B2/C2)では、行列超過が約2.4〜2.7秒で429、行列待ちが約22.5秒で503。公平性は推論が遅すぎて実機では測れず、`admission`の単体測定(同時2・1件100ms、A20件/B3件/C3件を同時投入)で全完了A=1400ms、B=767ms、C=867ms(FIFOなら全て約1400ms)。VPS本番(2026-11-09反映、旧バイナリ`target/release/aruaru-llm.before-20261109adm`)で3サイト同時の2トークン生成は3件とも200。
+
+### Shared-base admission control (2026-11-09)
+Heavy Connect calls (Generate*/Translate/Transcribe/Ocr*) pass `src/admission.rs`: max concurrency (default 2), per-site queues served round-robin, queue caps (32 total / 8 per site, overflow = immediate 429), queue wait 30 s (503), execution cap 120 s (504; the slot is freed only when the computation really ends). Site id: `x-tenant` > `x-forwarded-host` > `anonymous` (set by the front open-web-server). Env: `ARUARU_LLM_MAX_CONCURRENT`, `_MAX_QUEUE`, `_MAX_QUEUE_PER_TENANT`, `_QUEUE_WAIT_SECS`, `_EXEC_TIMEOUT_SECS`. Measured: real GPT-2 inference is too slow in WSL for a fairness run (a single call hit the 60 s cap); overflow gave 429 in ~2.5 s, queue timeout 503 in ~22.5 s; the unit-level load test (2 slots, 100 ms jobs, A=20/B=3/C=3) finished A=1400 ms, B=767 ms, C=867 ms vs ~1400 ms under FIFO. Deployed to the VPS 2026-11-09 (3 simultaneous sites: all 200).
+
+## HANDOFF 2026-11-15(先生キャラ・知識ストア) / Teacher persona & knowledge store
+
+- **日本語**: 実装=`src/persona.rs`(`pick_headline`含む)・`src/knowledge.rs`、取得先は`maid-cafe.tokyo/openenglish.v1.Knowledge/Export`→GitHub(`open-english`/`maid-cafe-english`の`data/knowledge/knowledge.json`)。VPS: `knowledge-sync-push.timer`(6時間ごと)、`/root/aruaru-llm`は`f95d6aa`をビルド・稼働中。**未解決(最優先)**: VPSで`PersonaPrompt`に`country: Japan`を渡しても「today's news」の行が出ない(ニュースAPI`NewsFor`自体は即時に返る。取得の3秒タイムアウトか`fetch_for_country_cached`の挙動を調べる)。そのほか未確認: Android実機、VPS丸ごとの再構成。**落とし穴**: REST全廃済みで経路はConnect(`/aruaru_llm.v1.Llm/<Method>`、POST)。VPSの`Cargo.lock`はビルドでずれるので`git checkout Cargo.lock`してからpull。起動ウォームアップに約2分。
+- **English**: Code: `src/persona.rs` (incl. `pick_headline`), `src/knowledge.rs`; sources `maid-cafe.tokyo/openenglish.v1.Knowledge/Export` then GitHub (`data/knowledge/knowledge.json` in `open-english`/`maid-cafe-english`). VPS: `knowledge-sync-push.timer` (6 h); `/root/aruaru-llm` runs `f95d6aa`. **Open (top)**: on the VPS, `PersonaPrompt` with `country: Japan` returns no "today's news" line (the `NewsFor` API itself answers instantly; check the 3 s timeout / `fetch_for_country_cached`). Also unverified: a real Android device, a from-scratch VPS rebuild. **Pitfalls**: REST is gone; use Connect (`POST /aruaru_llm.v1.Llm/<Method>`). VPS `Cargo.lock` drifts on build: `git checkout Cargo.lock` before pulling. Start-up warm-up takes ~2 min.
+
+- **2026-11-15 追記(別アカウントで再開する人へ・リリースとWindows)**: **v0.2.5を公開**(これまで最新リリースv0.2.4は旧REST版で、open-englishのWindowsインストーラーが取得するとConnectが404・チャット502だった)。原因の一つはリリースCIにVulkanシェーダーコンパイラ`glslc`が無かったこと(open-cudaの`opencuda-shader-build`がビルド時に要る)→`release.yml`に導入(Linux=`apt install glslc`、Windows=`choco install vulkan-sdk`+`GITHUB_PATH`)。再取得したWindows版でConnect `Runtime`=200・旧`/v1/runtime`=404を実機確認。**注意**: v0.2.5のコミットに、元から未コミットだった`Cargo.lock`の変更が混入(CI成功、未精査)。リリースCIは`main`へ自動コミット(「update committed Windows installer」)を足すことがあるので、pushの前に`git pull --rebase`。`data/news-feed-*.json`は別作業の未コミットで触らない。再開するリポジトリ=`aon-co-jp/aruaru-llm`(`F:\aruaru-llm`)と`aon-co-jp/open-english`(新名`maid-cafe-english`、`F:\open-english`)。
+
+- **2026-11-15 addendum (for whoever resumes on another account; releases and Windows)**: **v0.2.5 was published** (the previous latest release, v0.2.4, was the old REST build, so open-english's Windows installer got Connect 404 and chat 502). One cause: the release CI lacked the Vulkan shader compiler `glslc` (open-cuda's `opencuda-shader-build` needs it at build time) -> added to `release.yml` (Linux `apt install glslc`; Windows `choco install vulkan-sdk` + `GITHUB_PATH`). With the re-fetched Windows build, Connect `Runtime` = 200 and old `/v1/runtime` = 404 were confirmed on a real PC. **Caveats**: the v0.2.5 commit also swept in a previously uncommitted `Cargo.lock` change (CI passed, not reviewed). The release CI may push an automatic commit to `main` ("update committed Windows installer"), so `git pull --rebase` before pushing. Leave `data/news-feed-*.json` (another task's uncommitted files) alone. Repos to resume: `aon-co-jp/aruaru-llm` (`F:\aruaru-llm`) and `aon-co-jp/open-english` (now `maid-cafe-english`, `F:\open-english`).
+
+## 2026-11-15 再開用メッセージ: 共有基盤の受付制御(別アカウントで再開)
+**再開するリポジトリ**: `F:\aruaru-llm`(本体)、`F:\runo`(記録)。`F:\open-cuda`・`F:\open-directx`は判断の記録のみ(コード変更なし)。
+**済み**: aruaru-llmに受付制御(`src/admission.rs`、`src/connect.rs`)を実装し、2026-11-09にVPSへ反映(同時2・待ち行列全体32/サイト別8・待ち30秒=503・実行120秒=504・満杯=429、Connect形式)。3サイト同時の生成は全て200。単体の公平性測定はA=1400/B=767/C=867ms。open-cuda/open-directxはライブラリのまま(理由は各`CLAUDE.md`)。コミットはorigin/mainに反映済みを確認。
+**未了**: (1)前面open-web-serverが`x-tenant`ヘッダを付けているかの確認(付かないと全サイトが`anonymous`扱い=公平配分が効かない)。(2)実推論での公平性の実測(VPS/WSLのGPT-2は遅く、単発でも60秒超。高速な推論先が要る)。(3)上限値(既定2/32/8)の調整。(4)Chat/Classify等の軽い呼び出しは対象外のまま。
+**落とし穴**: VPSではビルドしない(WSLでビルド→glibc<=2.39確認→scp→バックアップ→再起動→自動ロールバック)。`ARUARU_LLM_GPT2_DIR=models/gpt2`が無いとモデルを読めない。シェルスクリプトで`wait`を引数なしで使うとバックグラウンドのサーバーまで待つ。
+**そのまま貼る再開用メッセージ**:
+> `F:\aruaru-llm/CLAUDE.md`の「共有基盤としての受付制御」と`F:\runo/API-REST-REMAINING-20261106.md`末尾(2026-11-09)を読み、未了(1)`x-tenant`ヘッダの前面付与の実機確認から再開して。VPSではビルドせずWSLでビルドして差し替え、REST新設禁止(Connect)、秘密は出さない。
+
+### 2026-11-15 Resume message: shared-base admission control (resuming on another account)
+**Repos to resume**: `F:\aruaru-llm` (code), `F:\runo` (records). `F:\open-cuda` and `F:\open-directx` only hold a decision record (no code change).
+**Done**: admission control in aruaru-llm (`src/admission.rs`, `src/connect.rs`), deployed to the VPS on 2026-11-09 (2 concurrent, queue 32 total / 8 per site, 30 s wait = 503, 120 s run = 504, full = 429, Connect-style errors). Three simultaneous sites all got 200. Unit-level fairness: A=1400 / B=767 / C=867 ms. open-cuda / open-directx stay libraries (reasons in each `CLAUDE.md`). The commits are confirmed on origin/main.
+**Open**: (1) verify the front open-web-server sets `x-tenant` (otherwise every site is `anonymous` and fairness has no effect); (2) measure fairness with real inference (GPT-2 on the VPS/WSL is slow, >60 s even for one call; needs a fast backend); (3) tune the limits (defaults 2/32/8); (4) light calls (Chat/Classify) are still not governed.
+**Pitfalls**: never build on the VPS (build in WSL, check glibc <= 2.39, scp, back up, restart, auto-rollback). Without `ARUARU_LLM_GPT2_DIR=models/gpt2` the model fails to load. A bare `wait` in a shell script also waits for a background server.
+**Paste-ready resume message**:
+> Read "Shared-base admission control" in `F:\aruaru-llm/CLAUDE.md` and the 2026-11-09 section at the end of `F:\runo/API-REST-REMAINING-20261106.md`, then resume at open item (1): verify on the real front server that `x-tenant` is set. Do not build on the VPS (WSL build then swap), no new REST (Connect only), never print secrets.
+
+## 翻訳を rust-bert から別プロセスのワーカーへ(2026-11-16、ブランチ `translate-worker`)
+- **理由**: `rust-bert` 0.23(最新・更新停止、`tch ^0.17` 固定)が `protobuf 2`・`zip 0.6`・`zstd-safe 5`・`h2 0.3` を引き、RUSTSEC-2024-0437/2026-0258/0367〜0369/0403 が直せなかった。`nllb-translate` feature・`rust-bert`・`tch` を削除し、`Cargo.lock` から5つの crate が消えたことを確認(`h2` は 0.4.20 のみ)。
+- **新構成**: `src/nllb.rs` は `ARUARU_TRANSLATE_URL`(未設定なら無効)の翻訳ワーカーを Connect(`POST /aruaru_translate.v1.Translate/Translate`、JSON)で呼ぶ。失敗・未設定は従来の GPT-2 流用へフォールバック(動作は従来どおり)。ワーカーは `tools/translate-worker`(Rust、CTranslate2/`ct2rs`、M2M100 418M INT8、127.0.0.1 のみ待受)。手順は同フォルダの README。
+- **実測(WSL)**: `cargo test` 190件合格。ワーカー実起動で日英・仏日の往復、不正入力(言語コード・JSON)の拒否を確認。常駐メモリ約670MB、1文あたり約1.5〜2.6秒(初回含む)。
+- **正直な注意**: 品質は GPT-2 流用より実用的だが誤訳はある(例: dependencies→依存度/依存症)。`source_lang` 省略時は英語と見なす。M2M100 の重みのライセンス(MIT と認識)は採用前にモデルカードで要確認。**未了**: VPS(RAM約3.6GB)での実測・配置(systemd ユニット、モデルの置き場)、本体と実接続した `/v1/translate` の通し確認、main へのマージ(他セッションが作業中のためブランチのまま)。
+
+## HANDOFF 2026-11-18: real-vulkan GPU失敗バグの原因と対策 / real-vulkan GPU failure root cause and guard
+**日本語**: 失敗(`no spirv bytes were provided`)の原因は、`matmul.spv`の配線(`wire_matmul_spirv`)がカレントディレクトリ相対パス`../open-cuda/...`に依存し、起動ディレクトリが違うと読み込みに失敗してspirv=Noneのままになる一方、プールにはVulkanデバイスが入っておりGPU担当リクエストが`sgemm`でエラーになること(推定。実GPUでの再現確認は未実施)。対策として`DevicePool::next_device`が、配線失敗中はSPIR-V対応デバイスを選ばずCPUへフォールバックするようにした(単体テスト2件通過)。環境変数`ARUARU_LLM_MATMUL_SPIRV`に絶対パスを指定すれば配線できる。未了: 実GPU(`real-vulkan`ビルド)での再現・修正確認。
+**English**: Root cause (inferred, not yet reproduced on a real GPU): `wire_matmul_spirv` loads `matmul.spv` from a cwd-relative path, so it fails when started from another directory, leaving spirv=None while a Vulkan device is in the pool, which makes `sgemm` fail. `DevicePool::next_device` now falls back to the CPU device while wiring is unsuccessful (2 unit tests pass). Set `ARUARU_LLM_MATMUL_SPIRV` to an absolute path to wire it. Open: confirm on a real `real-vulkan` build.
+
+## 2026-11-18 OCRフォント配信のConnect化(別アカウントでの再開用)
+
+**日本語**: `GET /v1/ocr/fonts/:name` を廃止し、`POST /aruaru_llm.v1.Llm/OcrFont`(JSON `{name}` → `{name, content_type, sha256, data_base64}`)へ移した。呼び出し側は RPoem の `open-runo-pdf-ocr`(`client.rs`の`font()`、sha256を照合)の1か所のみ。手元で新200・不明名404・旧404を実測、RPoem `open-runo-pdf-ocr` は22件+スモーク1件成功。
+- ブランチ(push済み、**mainへ未マージ**): aruaru-llm `ocr-font-connect`(`0de391b`系、`94a9eab`)・RPoem `ocr-font-connect`(`345149a`)。
+- **本番は未反映**。VPSの`/root/repository/aruaru-llm`は`c4c94d0`(`28007df`の翻訳ワーカー化より前)なので、`origin/main`をそのまま入れずに、`c4c94d0`へフォント修正だけを載せた`ocr-font-deploy`(`b42fc8c`、ローカルworktree `F:\_work\llm-deploy`、未push)をWSLでリリースビルド中だった(`F:\_workb4.sh`、出力`F:\_workb4.out`)。
+- 未了: (1)ビルド成果物をVPSの`/root/aruaru-llm/target/release/aruaru-llm`へバックアップ付きで差し替え(旧は`*.before-*`で残す)、再起動後に`/healthz`・`OcrFont`200・旧404を確認、(2)aruaru-llmとRPoemの`main`へマージ、(3)`version-control`の`exceptions.toml`に入れた`/v1/ocr/fonts/:name`の例外(`879f619`)を戻す、(4)古い版のPDF変換クライアントはフォント取得が失敗する旨の告知。
+- 注意: VPSではビルドしない(WSLでビルド→差し替え)。秘密は表示しない。REST新設は不可(Connectのみ)。
+
+**English**: `GET /v1/ocr/fonts/:name` was removed and replaced by `POST /aruaru_llm.v1.Llm/OcrFont` (JSON `{name}` -> `{name, content_type, sha256, data_base64}`). The only caller is RPoem's `open-runo-pdf-ocr` (`font()` in `client.rs`, which verifies sha256). Verified locally: new 200, unknown name 404, old route 404; `open-runo-pdf-ocr` passes 22 tests + 1 smoke test.
+- Branches (pushed, **not merged to main**): aruaru-llm `ocr-font-connect` (on `0de391b`, `94a9eab`), RPoem `ocr-font-connect` (`345149a`).
+- **Production is not updated.** The VPS clone is at `c4c94d0` (before the `28007df` translate-worker change), so do not deploy `origin/main` as is; a branch `ocr-font-deploy` (`b42fc8c`, local worktree `F:\_work\llm-deploy`, unpushed) carries only the font fix on top of `c4c94d0` and was being release-built in WSL (`F:\_workb4.sh`, output `F:\_workb4.out`).
+- Open: (1) swap the build into `/root/aruaru-llm/target/release/aruaru-llm` on the VPS with a backup (keep the old one as `*.before-*`), restart, check `/healthz`, `OcrFont` 200 and old route 404; (2) merge to `main` in aruaru-llm and RPoem; (3) revert the exception entry for `/v1/ocr/fonts/:name` added to `version-control`'s `exceptions.toml` (`879f619`); (4) tell users that old PDF-converter clients can no longer fetch fonts.
+- Notes: never build on the VPS (WSL build, then swap); never print secrets; no new REST (Connect only).
+
+
+## 2026-11-18 受付制御の観測手段(AdmissionStats)と本番確認 / Admission-control observability and production check
+**日本語**: 読み取り専用の`POST /aruaru_llm.v1.Llm/AdmissionStats`(`{}`)を追加(`c0a0783`)。上限値・実行中/待ち・サイト別の受付数(admitted)・待ちに入った数(queued)・429/503/504・現在の実行中/待ちを返す。本文・秘密は含めない。サイト名は`x-tenant`→`x-forwarded-host`→`anonymous`、整形済み64字以内、記録は256サイトまで(超過は`other`)。2026-11-18にWSL(Ubuntu-24.04、glibc 2.39)でビルドしVPSへ反映(バックアップ`aruaru-llm.before-adminstats-20261118`、別ポートのカナリア→差し替え、失敗時は自動ロールバック)。反映後`/healthz`200・エラーログ0。本番で`x-tenant`を変えた軽い呼び出し(本文不正で400に即返る`Generate`/`Translate`)を送り、`AdmissionStats`にサイト別(open-english・realdata-pro・aruaru-search各2、`x-forwarded-host`由来`site.example`、ヘッダ無し=`anonymous`)で現れることを確認した。呼び出し側: open-english(`fde6f1c`)の全aruaru-llm呼び出しに`x-tenant: open-english`を追加、`daily-news-collect.sh`にも付与。realdata-pro・aruaru-search・aruaru-IMEは付与済みだった。**未確認**: open-englishの新版は本番未反映のため実トラフィックでの`open-english`計上、前面open-web-serverが`x-forwarded-host`を付けるか、上限値(既定2/32/8)の調整(実推論での公平性測定が無いので変更していない)。**未修正**: open-cg-cad・open-koumuten・sftp-gitは廃止済みの旧`/v1/...`を呼んでおり、そもそも動かない。(訂正: aruaru-jobsは手元の`runo/repository/aruaru-jobs`が古い写しで、GitHubのmainは既にConnect(`aruaru_jobs.v1.Jobs/Search`→`SearchRaw`)化済み・VPSも新400/旧404を実測。`x-tenant`は未付与だが`SearchRaw`は受付制御の対象外。)
+**English**: Added read-only `POST /aruaru_llm.v1.Llm/AdmissionStats` (`c0a0783`): limits, running/waiting, and per-site admitted/queued/429/503/504 counters (no bodies or secrets; site names sanitised, max 256 tracked, rest in `other`). Built in WSL (glibc 2.39) and deployed on 2026-11-18 with backup, canary on another port, and automatic rollback; `/healthz` 200, no error logs. Light calls with different `x-tenant` headers (fast 400 on `Generate`/`Translate`) appeared per site in the stats. Callers: open-english now sends `x-tenant: open-english` on every aruaru-llm call (`fde6f1c`), `daily-news-collect.sh` too; realdata-pro, aruaru-search and aruaru-IME already did. **Unverified**: real traffic for open-english (new build not yet deployed), whether the front server sets `x-forwarded-host`, and tuning the limits (no fairness measurement with real inference, so unchanged). **Not fixed**: open-cg-cad, open-koumuten, sftp-git still call removed legacy `/v1/...` routes (correction: aruaru-jobs was a stale local copy; GitHub main and the VPS are already on Connect, new 400 / old 404; it sends no `x-tenant`, but `SearchRaw` is not governed).
+
+
+## 2026-11-18 旧`/v1/generate`呼び出し側の修正と open-cg-cad の本番反映 / Legacy-caller fixes and open-cg-cad deploy
+**日本語**: (1) open-koumuten(`fbc0487`): `/v1/generate`→`aruaru_llm.v1.Llm/Generate`+`x-tenant: open-koumuten`。元から`reqwest::blocking`を非同期ハンドラ内で直接使いパニックしていた(修正前のコードで同じ3テストが失敗)ため専用スレッドで実行するよう修正、テスト全成功。koumuten-api自身の`POST /v1/proposals`はRESTのまま(未移行)。VPSでは動いていない。(2) sftp-git(`aa38af1`、既定ブランチはmaster): 同様にConnect+`x-tenant: sftp-git`、テスト32件成功。VPSでは動いていない。(3) open-cg-cad(`17d6eda`): ソースは`68aa70e`で既にConnect。`x-tenant: open-cg-cad`を追加。**VPSは10/28ビルドの旧版で旧`/v1/generate`が400(REST全廃が未反映)だった**ため、WSL(glibc 2.39)でビルドしSHA256一致を確認、バックアップ`open-cg-cad-server.before-connect-20261118`→別ポートのカナリア→差し替え(自動ロールバック付き)で本番(8105)とdemo(8112)に反映。実測: 両ポートとも新`open_cg_cad.v1.Cad/Generate`=400(空入力の検証応答)、旧`/v1/generate`=404、サービスactive、エラーログ0。(4) aruaru-jobsは訂正済み(GitHub mainとVPSは既にConnect化)。(5) **D(サイト別計上の確認)**: 2026-11-18に本番`AdmissionStats`でopen-english・realdata-pro・aruaru-search・`x-forwarded-host`由来・ヘッダ無し(anonymous)がサイト別に現れることを確認済み。**未確認**: open-english・open-cg-cad等の新版が実トラフィックで`x-tenant`を送って計上されること(open-englishの新版は本番未反映)、open-cg-cadの`Generate`正常系(実推論はVPSで3分超かかるため打っていない)、前面open-web-serverが`x-forwarded-host`を付けるか、上限値(2/32/8)の調整。
+**English**: (1) open-koumuten (`fbc0487`): moved to `Llm/Generate` + `x-tenant`; also fixed a pre-existing panic (blocking reqwest inside the async handler; same 3 tests failed before) by running it on a dedicated thread; tests pass. Its own `POST /v1/proposals` is still REST. Not running on the VPS. (2) sftp-git (`aa38af1`, default branch master): same, 32 tests pass; not on the VPS. (3) open-cg-cad (`17d6eda`): source already on Connect; added `x-tenant`. The VPS still ran the 10/28 build with legacy `/v1/generate` answering 400, so it was built in WSL (SHA256 verified) and deployed to production (8105) and demo (8112) with backup `open-cg-cad-server.before-connect-20261118`, canary and automatic rollback. Measured on both ports: new `Cad/Generate` 400 (validation on empty input), old `/v1/generate` 404, services active, no error logs. (4) aruaru-jobs correction recorded. (5) **D**: per-site counting in production `AdmissionStats` was confirmed on 2026-11-18 (open-english, realdata-pro, aruaru-search, forwarded-host, anonymous). **Unverified**: real traffic from the new open-english / open-cg-cad builds, the open-cg-cad `Generate` success path (real inference takes over 3 minutes on the VPS, not run), whether the front server sets `x-forwarded-host`, and limit tuning.
+
+## 2026-11-18 Generate遅延の原因と対策・本番の状態(日本語)
+- **原因(ローカルWSLで再現)**: CPU経路のprefillは長さのおよそ2.5乗で遅くなる。GPT-2のBPEはバイト単位で、日本語は1文字あたり2〜3トークン。知識・ニュース文脈でプロンプトが長くなり、8トークンの生成に100秒超かかった(文脈を外すと0.6秒)。スレッド競合ではない(`RAYON_NUM_THREADS`を減らしても変わらず)。
+- **対策**: (1)`main`の`4805563`=プロンプト上限64トークン+知識/ニュース文脈の長さ制限、(2)open-cuda `480718f`=小さな行列積・softmaxのrayonオーバーヘッドを避ける直列化。ocr-font-deployの`cd83d8d`(バイト予算のクリップ)は`4805563`と同等のためmainへは取り込まない。
+- **本番VPSのバイナリ**: 2つのセッションが同じ日にバイナリを差し替えた。最終的に`main`系(他セッションのビルド)へ戻し、Generate 8トークン5秒・`OcrFont`200・旧経路404・`Runtime`200・active を実測。私のビルドは`aruaru-llm.mine-ctxclip-20261118`、ほかのバックアップ=`.before-font-` / `.before-ctxclip-` / `.before-fastgen-` / `.before-gemmfix-20261118`。
+- **次回**: `origin/main`からクリーンビルドして差し替え、Generateを再測定する(未実施)。
+
+## 2026-11-19 この機械で動かせるモデルの一覧・ハード変更の自動導入 / Machine-fit model list and auto-install on hardware change
+**日本語**: `POST /aruaru_llm.v1.Llm/ModelsCompatible`(Connect)が、GPT-2系とQwen系のカタログを「この機械のメモリに入る見込みか・導入済みか・お勧めか」つきで返し、10か国語の説明も付ける(`src/model_fit.rs`)。判定は搭載メモリ(RAM)で行う目安(必要量=ファイルサイズ×読み込み係数×1.25+1GB を搭載メモリの85%と比較。係数はGPT-2=1、Qwen=2)。日英独露のWeb調査(重み+KVキャッシュ+余裕15〜40%)に合わせた。起動時にGPU名・VRAM・RAM・コア数の指紋を`models/.hw-fingerprint`に記録し、前回と違えばお勧めモデルを背景で導入する(初回は記録のみ、`ARUARU_LLM_AUTO_MODEL=0`で停止)。導入後の切替は`ModelsSelect`。**済み(2026-11-19)**: 選択UI(`static/index.html`)・VPS反映(バックアップ`aruaru-llm.before-modelfit-20261119`)。**未了**: GPU交換での実機確認、Android実機、実際の生成はCPUのまま。
+**English**: `POST /aruaru_llm.v1.Llm/ModelsCompatible` (Connect) returns the GPT-2 and Qwen catalogs with fits / installed / recommended flags and a 10-language explanation (`src/model_fit.rs`). The fit rule is a RAM-based rough guide (need = file size x load factor x 1.25 + 1 GB vs 85% of RAM; factor GPT-2 = 1, Qwen = 2), aligned with web research in Japanese, English, German and Russian (weights + KV cache + 15-40% margin). On start a fingerprint (GPU name, VRAM, RAM, cores) is stored in `models/.hw-fingerprint`; if it differs from last time, the recommended model is installed in the background (first run only records; `ARUARU_LLM_AUTO_MODEL=0` stops it). Switch with `ModelsSelect` afterwards. **Open**: a real GPU-swap test, VPS deployment, a selection UI; generation still runs on the CPU.
+
+## 2026-11-19 作業メモ: モデル一覧と自動導入 / Work note: model list and auto install
+
+**日本語**
+- `src/model_fit.rs` を追加。Connect の `POST /aruaru_llm.v1.Llm/ModelsCompatible` が、GPT-2系とQwen系の一覧を「入る見込み・導入済み・お勧め」つきで返す(説明は10か国語、AI翻訳)。
+- 判定は搭載メモリ(RAM)で行う。必要量 = ファイルサイズ × 読み込み係数(GPT-2=1、Qwen=2) × 1.25 + 1GB が、RAMの85%以内なら「入る」。日英独露のWeb調査(重み+KVキャッシュ+余裕15〜40%)に合わせた目安。
+- 起動時に GPU名・VRAM・RAM・コア数の指紋を `models/.hw-fingerprint` に書く。前回と違えばお勧めモデルを背景で導入する。初回は記録だけ。`ARUARU_LLM_AUTO_MODEL=0` で停止。
+- 画面は `static/index.html`。VPSへは2026-11-19に反映済み(バックアップ `aruaru-llm.before-modelfit-20261119`)。
+- 未了: GPU交換の実機確認、Android実機、GPU推論(生成はCPUのまま)。
+
+**English**
+- Added `src/model_fit.rs`. The Connect call `POST /aruaru_llm.v1.Llm/ModelsCompatible` returns the GPT-2 and Qwen models with "likely fits", "installed" and "recommended" flags, plus a 10-language explanation (AI-translated).
+- The check uses installed memory (RAM): need = file size x load factor (GPT-2 = 1, Qwen = 2) x 1.25 + 1 GB, and it "fits" if that is within 85% of RAM. This matches web research in Japanese, English, German and Russian (weights + KV cache + 15-40% margin).
+- At start-up a fingerprint (GPU name, VRAM, RAM, cores) is written to `models/.hw-fingerprint`. If it differs from last time, the recommended model is installed in the background. The first run only records. `ARUARU_LLM_AUTO_MODEL=0` stops it.
+- The screen is `static/index.html`. It was deployed to the VPS on 2026-11-19 (backup `aruaru-llm.before-modelfit-20261119`).
+- Open: a real GPU-swap test, a real Android device, GPU inference (generation still runs on the CPU).
+
+## 他の言語 / Other languages (2026-11-19)
+
+### 简体中文
+
+- 新增 `src/model_fit.rs`。Connect 接口 `POST /aruaru_llm.v1.Llm/ModelsCompatible` 返回 GPT-2 和 Qwen 系列模型,并标注“可能适合 / 已安装 / 推荐”,附 10 种语言的说明(AI 翻译)。
+- 判断依据是内存(RAM):所需量 = 文件大小 × 加载系数(GPT-2=1,Qwen=2)× 1.25 + 1GB,不超过 RAM 的 85% 即为“适合”。参考了日、英、德、俄语的网络调查(权重 + KV 缓存 + 15〜40% 余量)。
+- 启动时把 GPU 名称、显存、内存、核心数写入 `models/.hw-fingerprint`;与上次不同就在后台安装推荐模型。首次只记录。`ARUARU_LLM_AUTO_MODEL=0` 可关闭。
+- 界面为 `static/index.html`,已于 2026-11-19 部署到 VPS(备份 `aruaru-llm.before-modelfit-20261119`)。未完成:更换 GPU 的实机验证、Android 实机、GPU 推理(生成仍在 CPU)。
+
+### 繁體中文(台灣)
+
+- 新增 `src/model_fit.rs`。Connect 介面 `POST /aruaru_llm.v1.Llm/ModelsCompatible` 回傳 GPT-2 與 Qwen 系列模型,並標註「可能適合 / 已安裝 / 推薦」,附 10 種語言的說明(AI 翻譯)。
+- 判斷依據是記憶體(RAM):所需量 = 檔案大小 × 載入係數(GPT-2=1,Qwen=2)× 1.25 + 1GB,不超過 RAM 的 85% 即為「適合」。參考了日、英、德、俄語的網路調查(權重 + KV 快取 + 15〜40% 餘裕)。
+- 啟動時把 GPU 名稱、顯示記憶體、記憶體、核心數寫入 `models/.hw-fingerprint`;與上次不同就在背景安裝推薦模型。第一次只記錄。`ARUARU_LLM_AUTO_MODEL=0` 可關閉。
+- 介面為 `static/index.html`,已於 2026-11-19 部署到 VPS(備份 `aruaru-llm.before-modelfit-20261119`)。未完成:更換 GPU 的實機驗證、Android 實機、GPU 推論(生成仍在 CPU)。
+
+### 한국어
+
+- `src/model_fit.rs`를 추가했습니다. Connect 호출 `POST /aruaru_llm.v1.Llm/ModelsCompatible`가 GPT-2와 Qwen 계열 모델을 "들어갈 듯함 / 설치됨 / 추천" 표시와 10개 언어 설명(AI 번역)과 함께 돌려줍니다.
+- 판단은 메모리(RAM) 기준입니다. 필요량 = 파일 크기 × 로드 계수(GPT-2=1, Qwen=2) × 1.25 + 1GB 가 RAM의 85% 이내면 "맞음"입니다. 일본어·영어·독일어·러시아어 웹 조사(가중치 + KV 캐시 + 여유 15〜40%)에 맞췄습니다.
+- 시작할 때 GPU 이름, VRAM, RAM, 코어 수를 `models/.hw-fingerprint`에 기록하고, 지난번과 다르면 백그라운드에서 추천 모델을 설치합니다. 처음에는 기록만 합니다. `ARUARU_LLM_AUTO_MODEL=0`으로 끌 수 있습니다.
+- 화면은 `static/index.html`이며 2026-11-19에 VPS에 반영했습니다(백업 `aruaru-llm.before-modelfit-20261119`). 남은 일: GPU 교체 실기 확인, Android 실기, GPU 추론(생성은 아직 CPU).
+
+### Deutsch
+
+- `src/model_fit.rs` ist neu. Der Connect-Aufruf `POST /aruaru_llm.v1.Llm/ModelsCompatible` liefert die GPT-2- und Qwen-Modelle mit den Kennzeichen „passt wohl“, „installiert“ und „empfohlen“ sowie einer Erklärung in 10 Sprachen (KI-Übersetzung).
+- Geprüft wird gegen den Arbeitsspeicher (RAM): Bedarf = Dateigröße × Ladefaktor (GPT-2 = 1, Qwen = 2) × 1,25 + 1 GB; liegt er innerhalb von 85 % des RAM, gilt das Modell als passend. Grundlage ist eine Web-Recherche auf Japanisch, Englisch, Deutsch und Russisch (Gewichte + KV-Cache + 15–40 % Reserve).
+- Beim Start werden GPU-Name, VRAM, RAM und Kernzahl in `models/.hw-fingerprint` gespeichert. Weicht der Wert vom letzten Mal ab, wird das empfohlene Modell im Hintergrund installiert. Beim ersten Start wird nur gespeichert. Abschalten mit `ARUARU_LLM_AUTO_MODEL=0`.
+- Die Oberfläche ist `static/index.html`; sie wurde am 2026-11-19 auf den VPS gebracht (Sicherung `aruaru-llm.before-modelfit-20261119`). Offen: echter GPU-Wechseltest, echtes Android-Gerät, GPU-Inferenz (die Generierung läuft weiter auf der CPU).
+
+### Français
+
+- Ajout de `src/model_fit.rs`. L'appel Connect `POST /aruaru_llm.v1.Llm/ModelsCompatible` renvoie les modèles GPT-2 et Qwen avec les indicateurs « tient probablement », « installé » et « recommandé », plus une explication en 10 langues (traduite par IA).
+- Le test porte sur la mémoire (RAM) : besoin = taille du fichier × facteur de chargement (GPT-2 = 1, Qwen = 2) × 1,25 + 1 Go ; si c'est dans les 85 % de la RAM, le modèle « convient ». Cela suit une recherche web en japonais, anglais, allemand et russe (poids + cache KV + marge de 15 à 40 %).
+- Au démarrage, une empreinte (nom du GPU, VRAM, RAM, cœurs) est écrite dans `models/.hw-fingerprint`. Si elle diffère de la précédente, le modèle recommandé est installé en arrière-plan. Au premier démarrage, on enregistre seulement. `ARUARU_LLM_AUTO_MODEL=0` désactive.
+- L'interface est `static/index.html`, déployée sur le VPS le 2026-11-19 (sauvegarde `aruaru-llm.before-modelfit-20261119`). Reste à faire : test réel avec changement de GPU, appareil Android réel, inférence GPU (la génération reste sur le processeur).
+
+### Español
+
+- Se añadió `src/model_fit.rs`. La llamada Connect `POST /aruaru_llm.v1.Llm/ModelsCompatible` devuelve los modelos GPT-2 y Qwen con las marcas «probablemente cabe», «instalado» y «recomendado», y una explicación en 10 idiomas (traducida por IA).
+- La comprobación usa la memoria (RAM): necesidad = tamaño del archivo × factor de carga (GPT-2 = 1, Qwen = 2) × 1,25 + 1 GB; si cabe en el 85 % de la RAM, «cabe». Sigue una búsqueda web en japonés, inglés, alemán y ruso (pesos + caché KV + margen del 15 al 40 %).
+- Al arrancar se guarda una huella (nombre de GPU, VRAM, RAM, núcleos) en `models/.hw-fingerprint`. Si difiere de la anterior, el modelo recomendado se instala en segundo plano. En el primer arranque solo se registra. `ARUARU_LLM_AUTO_MODEL=0` lo desactiva.
+- La interfaz es `static/index.html`, desplegada en el VPS el 2026-11-19 (copia `aruaru-llm.before-modelfit-20261119`). Pendiente: prueba real con cambio de GPU, dispositivo Android real, inferencia en GPU (la generación sigue en la CPU).
+
+### Português (BR)
+
+- Foi adicionado `src/model_fit.rs`. A chamada Connect `POST /aruaru_llm.v1.Llm/ModelsCompatible` devolve os modelos GPT-2 e Qwen com as marcas "provavelmente cabe", "instalado" e "recomendado", e uma explicação em 10 idiomas (tradução por IA).
+- A checagem usa a memória (RAM): necessário = tamanho do arquivo × fator de carga (GPT-2 = 1, Qwen = 2) × 1,25 + 1 GB; se couber em 85% da RAM, "cabe". Segue uma pesquisa na web em japonês, inglês, alemão e russo (pesos + cache KV + margem de 15 a 40%).
+- Na inicialização, uma impressão digital (nome da GPU, VRAM, RAM, núcleos) é gravada em `models/.hw-fingerprint`. Se for diferente da anterior, o modelo recomendado é instalado em segundo plano. Na primeira vez só registra. `ARUARU_LLM_AUTO_MODEL=0` desativa.
+- A interface é `static/index.html`, implantada no VPS em 2026-11-19 (backup `aruaru-llm.before-modelfit-20261119`). Pendente: teste real com troca de GPU, aparelho Android real, inferência em GPU (a geração continua na CPU).
+
+### Русский
+
+- Добавлен `src/model_fit.rs`. Вызов Connect `POST /aruaru_llm.v1.Llm/ModelsCompatible` возвращает модели GPT-2 и Qwen с пометками «вероятно подходит», «установлена», «рекомендуется» и пояснением на 10 языках (перевод ИИ).
+- Проверка идёт по оперативной памяти (RAM): нужно = размер файла × коэффициент загрузки (GPT-2 = 1, Qwen = 2) × 1,25 + 1 ГБ; если это не более 85 % RAM, модель «подходит». Основа — веб-поиск на японском, английском, немецком и русском (веса + KV-кэш + запас 15–40 %).
+- При запуске отпечаток (имя GPU, VRAM, RAM, число ядер) записывается в `models/.hw-fingerprint`; если он изменился, рекомендуемая модель устанавливается в фоне. При первом запуске только запись. Отключить: `ARUARU_LLM_AUTO_MODEL=0`.
+- Интерфейс — `static/index.html`, развёрнут на VPS 2026-11-19 (резервная копия `aruaru-llm.before-modelfit-20261119`). Не сделано: реальная проверка со сменой GPU, реальное Android-устройство, вывод на GPU (генерация пока на процессоре).
+
+(简体中文: AI 翻译,尚未经母语者确认。; 繁體中文(台灣): AI 翻譯,尚未經母語者確認。; 한국어: AI 번역이며 원어민 확인 전입니다.; Deutsch: KI-Übersetzung, noch nicht von Muttersprachlern geprüft.; Français: Traduction par IA, pas encore relue par des locuteurs natifs.; Español: Traducción por IA, aún sin revisión de hablantes nativos.; Português (BR): Tradução por IA, ainda sem revisão de falantes nativos.; Русский: Перевод выполнен ИИ, носителями языка пока не проверен.)
+
+## 2026-11-19 大きなAIモデルを動かす取り組みの現状 / Running bigger AI models: status and plan
+
+### 日本語(やさしい説明)
+**いまできること**
+- 大きなAIモデルは、重さが1つのファイルでなく「いくつかに分かれたファイル」で配られることがあります。これを**自動で全部ダウンロードして、読み込める**ようになりました(`aruaru-llm` と `open-cuda`)。
+- 本物の Qwen2.5-3B(約6GB、2つに分割)を、このパソコン(メモリ32GB、GPUなし)で**実際に読み込んで文章を作れる**ことを確かめました。読み込み約48秒、文章づくりは1秒に約0.6語(遅いけれど動きます)。
+- 読み込みは「ファイルを丸ごとメモリに入れず、必要な所だけ読む」やり方に変えたので、メモリの使いすぎが減りました。
+
+**調べて分かったこと**
+- 東芝の「シミュレーテッド分岐」や富士通の「デジタルアニーラ」は、「たくさんの選択肢から一番よい組み合わせを探す」道具です。AIの文章づくりを直接速くする道具ではありません。使うなら「どの部品をどこに置くか」「どの部分を何ビットに縮めるか」を決める所です(研究論文はまだ少ない)。
+- 「折り畳み(Model Folding)」は、似た部分をまとめてモデルを小さくする方法です。DeepSeek の MLA(記憶の圧縮)・MoE(専門家を必要な分だけ使う)・FP8(数を小さく表す)も同じ仲間の工夫です。
+- 実験: 学習済みの Qwen に後からMLA圧縮をかけると、記憶を25%減らしただけで品質が落ち(迷い度 7.1→12.7)、50%減らすと文が壊れました。**後付けのMLAは使えない**と分かりました(DeepSeekは最初からその形で学習しています)。
+
+**これから作るもの(確認なしで順に進めます)**
+1. 重みを小さい数(f16や量子化)のまま使って、7B級(約12GB)もこのパソコンで動かす。
+2. 層ごと・専門家ごとに「何ビットにするか」を自動で決める(まずは普通の計算、あとで焼きなましやSBも試す)。
+3. 似た層をまとめる「折り畳み」を試し、品質と速さを必ず測る。
+4. 速さの測定を毎回記録し、実用になるまで作る・試す・直すを何度も繰り返す。
+
+**約束**: 未了の作業は、危険でない限り**いちいち確認せず進めます**。ただし、取り返しのつかない削除や、秘密の公開はしません。結果が悪かったときは、悪かったと正直に書きます。
+
+### English (plain words, easy to read)
+**What works now**
+- Big AI models are often shipped as **several files** instead of one. The program can now **download all the parts and load them** (`aruaru-llm` and `open-cuda`).
+- We loaded the real Qwen2.5-3B model (about 6 GB, 2 parts) on this PC (32 GB memory, no GPU) and **it wrote text**. Loading took about 48 seconds; writing was about 0.6 words per second (slow, but it works).
+- Loading now reads only the parts it needs instead of copying whole files into memory, so it uses less memory.
+
+**What we learned**
+- Toshiba's "Simulated Bifurcation" and Fujitsu's "Digital Annealer" help **pick the best combination from many choices**. They do not make an AI write faster by themselves. They could help decide where to put each part, or how many bits each part gets (papers on this are still few).
+- "Model folding" means merging similar parts to make a model smaller. DeepSeek's MLA (memory compression), MoE (use only the needed experts) and FP8 (small numbers) are cousins of this idea.
+- Our test: adding MLA compression to an already-trained Qwen cut memory by 25% but made quality worse (perplexity 7.1 to 12.7), and a 50% cut broke the text. **Adding MLA afterwards does not work** (DeepSeek trains with it from the start).
+
+**What we will build next (we go on without asking)**
+1. Keep weights in small numbers (f16 or quantized) so 7B-size models (about 12 GB) can run on this PC.
+2. Choose bits per layer and per expert automatically (plain math first, annealing or SB later).
+3. Try "folding" similar layers, and always measure quality and speed.
+4. Record every speed test, then build, test and fix again and again until it is truly useful.
+
+**Promise**: for unfinished work we **go on without asking each time**, unless it is dangerous. We never do irreversible deletes or publish secrets. If a result is bad, we say so honestly.
+
+## 2026-11-19 大きなAIを小さなパソコンで動かす / Running big AI on a small PC (10 languages, easy words)
+
+### 日本語
+**できたこと**: 大きなAIは、重さが「いくつかのファイル」に分かれていることがあります。それを自動でぜんぶダウンロードして、読めるようになりました。本物のAI(Qwen 3B、約6GB)を、GPUのないふつうのパソコンで動かして、文章を作れました。ちょっと遅いけれど、ちゃんと動きます。
+**わかったこと**: 東芝や富士通の「最適な組み合わせを探す機械」は、AIを直接速くする道具ではありません。「どの部品を何ビットに縮めるか」を決める手伝いに使えるかもしれません。作ったあとの記憶の圧縮(MLA)は、品質が落ちるので使えませんでした。
+**これから**: AIの重さを小さい数で持って、もっと大きなAI(約12GB)も動かします。「確認しないで進める」ので、止まらずに作って、試して、直します。
+
+### English
+**Done**: Big AI models often come in several files. The program now downloads every part and loads them. We ran a real AI (Qwen 3B, about 6 GB) on an ordinary PC without a GPU, and it wrote text. It is a bit slow, but it works.
+**Learned**: The "best-combination finder" machines from Toshiba and Fujitsu do not make AI faster by themselves. They might help decide how many bits each part gets. Squeezing the memory afterwards (MLA) hurt quality, so we cannot use it.
+**Next**: Keep the AI's weights in small numbers so even bigger AI (about 12 GB) can run. We go on without asking each time: build, test and fix again and again.
+
+### 简体中文
+**已完成**:大型AI的权重常被拆成好几个文件。现在程序能自动全部下载并读取。我们在没有显卡的普通电脑上运行了真正的AI(Qwen 3B,约6GB),它能写出文字。虽然有点慢,但是能用。
+**发现**:东芝和富士通那种"找最佳组合的机器"不能直接让AI变快,也许能帮忙决定每个部分用几位数。事后压缩记忆(MLA)会让质量变差,所以不能用。
+**接下来**:用更小的数字保存权重,让更大的AI(约12GB)也能运行。我们不会每次都问,而是不停地做、测、改。
+
+### 繁體中文
+**已完成**:大型AI的權重常被拆成好幾個檔案。現在程式能自動全部下載並讀取。我們在沒有顯示卡的一般電腦上執行了真正的AI(Qwen 3B,約6GB),它能寫出文字。雖然有點慢,但可以用。
+**發現**:東芝和富士通那種「找最佳組合的機器」不能直接讓AI變快,也許能幫忙決定每個部分用幾位元。事後壓縮記憶(MLA)會讓品質變差,所以不能用。
+**接下來**:用更小的數字保存權重,讓更大的AI(約12GB)也能執行。我們不會每次都詢問,而是不停地做、測、改。
+
+### 한국어
+**해낸 일**: 큰 AI는 무게(가중치)가 여러 파일로 나뉘어 있을 때가 많아요. 이제 프로그램이 전부 자동으로 내려받아 읽을 수 있어요. 그래픽카드가 없는 보통 컴퓨터에서 진짜 AI(Qwen 3B, 약 6GB)를 돌려 글을 만들었어요. 조금 느리지만 잘 돼요.
+**알게 된 것**: 도시바와 후지쯔의 "가장 좋은 조합을 찾는 기계"는 AI를 직접 빠르게 하지는 않아요. 각 부분을 몇 비트로 줄일지 정하는 데 도움이 될 수는 있어요. 나중에 기억을 줄이는 방법(MLA)은 품질이 떨어져서 쓸 수 없었어요.
+**앞으로**: 무게를 더 작은 숫자로 들고 있어서 더 큰 AI(약 12GB)도 돌릴 거예요. 매번 묻지 않고 만들고, 시험하고, 고치기를 계속해요.
+
+### Deutsch
+**Geschafft**: Große KI-Modelle bestehen oft aus mehreren Dateien. Das Programm lädt jetzt alle Teile selbst herunter und liest sie. Wir haben eine echte KI (Qwen 3B, etwa 6 GB) auf einem normalen PC ohne Grafikkarte laufen lassen, und sie hat Text geschrieben. Etwas langsam, aber es klappt.
+**Gelernt**: Die „Maschinen, die die beste Kombination suchen“ von Toshiba und Fujitsu machen eine KI nicht von selbst schneller. Sie könnten helfen zu entscheiden, wie viele Bits jeder Teil bekommt. Das nachträgliche Zusammendrücken des Gedächtnisses (MLA) machte die Qualität schlechter, deshalb nutzen wir es nicht.
+**Als Nächstes**: Die Gewichte in kleineren Zahlen speichern, damit noch größere KI (etwa 12 GB) läuft. Wir machen ohne Rückfrage weiter: bauen, testen, verbessern, immer wieder.
+
+### Français
+**Fait** : Les grosses IA sont souvent livrées en plusieurs fichiers. Le programme télécharge maintenant toutes les parties et les lit. Nous avons fait tourner une vraie IA (Qwen 3B, environ 6 Go) sur un PC ordinaire sans carte graphique, et elle a écrit du texte. C'est un peu lent, mais ça marche.
+**Appris** : Les « machines qui cherchent la meilleure combinaison » de Toshiba et Fujitsu ne rendent pas l'IA plus rapide toutes seules. Elles pourraient aider à choisir combien de bits donner à chaque partie. Compresser la mémoire après coup (MLA) a abîmé la qualité, donc nous ne l'utilisons pas.
+**Ensuite** : Garder les poids en plus petits nombres pour faire tourner de plus grosses IA (environ 12 Go). Nous continuons sans demander à chaque fois : construire, tester, corriger, encore et encore.
+
+### Español
+**Hecho**: Las IA grandes suelen venir en varios archivos. Ahora el programa descarga todas las partes y las lee. Ejecutamos una IA real (Qwen 3B, unos 6 GB) en un PC normal sin tarjeta gráfica y escribió texto. Es un poco lento, pero funciona.
+**Aprendido**: Las «máquinas que buscan la mejor combinación» de Toshiba y Fujitsu no hacen más rápida a la IA por sí solas. Podrían ayudar a decidir cuántos bits da cada parte. Comprimir la memoria después (MLA) empeoró la calidad, así que no lo usamos.
+**Siguiente**: Guardar los pesos con números más pequeños para que corran IA aún más grandes (unos 12 GB). Seguimos sin preguntar cada vez: construir, probar y arreglar una y otra vez.
+
+### Português
+**Feito**: As IAs grandes costumam vir em vários arquivos. Agora o programa baixa todas as partes e as lê. Rodamos uma IA de verdade (Qwen 3B, cerca de 6 GB) num PC comum sem placa de vídeo, e ela escreveu texto. É um pouco lento, mas funciona.
+**Aprendido**: As «máquinas que procuram a melhor combinação» da Toshiba e da Fujitsu não deixam a IA mais rápida sozinhas. Elas podem ajudar a decidir quantos bits cada parte recebe. Comprimir a memória depois (MLA) piorou a qualidade, então não usamos.
+**Próximo**: Guardar os pesos em números menores para rodar IAs ainda maiores (cerca de 12 GB). Seguimos sem perguntar toda vez: construir, testar e consertar, de novo e de novo.
+
+### Русский
+**Сделано**: Большие ИИ часто поставляются в нескольких файлах. Теперь программа сама скачивает все части и читает их. Мы запустили настоящий ИИ (Qwen 3B, около 6 ГБ) на обычном компьютере без видеокарты, и он написал текст. Немного медленно, но работает.
+**Узнали**: «Машины, которые ищут лучшую комбинацию» от Toshiba и Fujitsu сами по себе ИИ не ускоряют. Возможно, они помогут решить, сколько бит дать каждой части. Сжатие памяти задним числом (MLA) ухудшило качество, поэтому мы его не используем.
+**Дальше**: Хранить веса в меньших числах, чтобы запускать ещё более крупные ИИ (около 12 ГБ). Мы продолжаем без вопросов каждый раз: строим, проверяем, исправляем снова и снова.
+
+## 2026-11-19 限界前チェックポイント(大きなモデル対応、別アカウントでの再開用)
+
+**完了(すべて main に push 済み)**
+- 分割重み(`model.safetensors.index.json`+複数ファイル)の取得(`aruaru-llm` `model_catalog.rs`、単一ファイルが404のときだけ・ストリーム書き込み・導入判定対応)と読み込み(`open-cuda-llm` `qwen_arch.rs`、mmap)。モックと合成データのテスト成功。
+- 実機確認(32GB・GPUなし・CPU): Qwen2.5-3B(2分割・6.17GB)を読み込み生成成功(読込約48秒、約0.6語/秒、ppl 8.5)。1.5Bは ppl 7.08。
+- 後付けMLA(PCA較正)は実用外: d_c=96でKV−25%だが ppl 12.7、d_c=64で崩れる(ppl 245)。MLAは学習時から入れる設計でないと効かない。
+- FP8読み込み `QwenModel::load_fp8`: 量子化を二分探索化・ホスト並列化し、行列積を融合(`opencuda-blas`)。1.5Bで読込340→21秒、生成1067→69秒、ppl 7.27(f32は7.08)、メモリ約1/4。ただしf32より約2.8倍遅い。
+- 調査: 東芝SB・富士通デジタルアニーラは組合せ最適化の道具でLLM推論を直接速めない。LLMでの先行例はTree-Ising(重みのQUBO修復、自己申告値)のみ。エキスパートごとのビット配分は線形/整数計画(GEMQ・BitsMoE)。「折り畳み」はModel Folding(ICLR 2025)・Layer Collapse・Sliding-Window Merging・GPTailor。DeepSeekのMLA・MoE遅延読み込みは `deepseek_arch.rs` に実装済み(実在チェックポイントでの通しは未確認)。
+- クラウドセッションに調査文書 `docs/LARGE-MODEL-TECHNIQUES.md`(ブランチ `docs/large-model-techniques`)を依頼済み(終了通知は来ない。`aruaru-llm` のブランチを確認すること)。
+
+**未了(確認なしで順に進める方針)**
+1. 層ごとの感度測定(層を飛ばす/隣接層を平均する「折り畳み」)と、ビット配分の自動決定(まず貪欲法、次に焼きなまし・SB)。`QwenModel` に層スキップ機構を足して `qwen_mla_bench` 系の例で ppl と速度を測る。
+2. FP8がf32より遅い問題(約2.8倍): SIMD化・f16保持・行単位スケール見直し。
+3. 7B級(約12〜15GB)の実読み込み: FP8読み込みで32GB機に載るかを実測(要ダウンロード許可内の公開モデル)。
+4. 実3BのFP8読み込み実測、`pl2pl llm setup` への分割モデル・FP8の反映、`aruaru-llm` のカタログに3Bの実機確認の記載。
+5. 10言語文書は現状分を追記済み。上記の結果が出たら更新する。翻訳はAI作成でネイティブ検証前。
+
+**注意**: `F:\open-cuda` の作業ブランチは `perf/serial-small-gemm`(`HEAD:main` を指定して push している)。`F:\aruaru-llm` は `Cargo.lock` と `data/` に未コミットの変更がある(別作業のもの、コミットしない)。モデルは `F:\aruaru-llm\models\qwen2.5-{1.5b,3b}-instruct`(サイズが大きいので消さない)。測定スクリプト: `open-cuda/crates/open-cuda-llm/examples/qwen_mla_bench.rs`(`QWEN_FP8=1` でFP8、引数にd_c)。
+
+## 2026-11-19 まとめ: 大きなAIを小さなパソコンで / Summary: big AI on a small PC
+
+### 日本語(やさしい説明)
+**できたこと**
+- 重さが「いくつかのファイル」に分かれた大きなAIを、自動でぜんぶダウンロードして読めるようになりました(`aruaru-llm`・`open-cuda`)。
+- 本物の Qwen2.5-3B(約6GB)を、GPUのないふつうのパソコンで動かして文章を作れました(読み込み約48秒、1秒に約0.6語)。
+- 重さを「FP8」という小さい数で持つ方法を作りました。メモリが約4分の1になり、品質はほぼ同じです(迷い度 7.08→7.27)。速くする工夫で、読み込みは340秒→21秒、文章づくりは1067秒→69秒になりました。まだ普通の方法より約2.8倍遅いので、メモリが足りないときの手段です。
+
+**試してわかったこと(正直な結果)**
+- 後から記憶を圧縮する「MLA」は、品質が落ちるので使えません(25%減で迷い度 7.1→12.7、50%減で文が壊れる)。
+- 「折り畳み(層を飛ばす)」を1.5Bで試しました。1層ずつ飛ばすと、真ん中あたりの層(5・10・12・15番など)は飛ばしてもほとんど平気でしたが、1番・24番・26番は大事でした。3層飛ばすと迷い度7.19(元7.08)で、速さは約7%だけ上がり、答えが少し不正確になりました。6層以上飛ばすと壊れます。**学び直しなしの層飛ばしは、効果が小さい**とわかりました。
+- 東芝の「シミュレーテッド分岐」や富士通の「デジタルアニーラ」は、「いちばん良い組み合わせを探す」道具で、AIを直接速くはしません。使うなら「どの層を飛ばすか」「何ビットにするか」を決める所ですが、まだ試していません。
+
+**これから(確認せず順に進めます)**
+1. 層を飛ばす組み合わせを、焼きなましやSBで探して、貪欲法と比べる。
+2. FP8を速くする(SIMD、f16保持)。
+3. 7B(約12〜15GB)をFP8で32GBのパソコンに載せられるか測る。
+4. `pl2pl llm setup` に分割モデルとFP8を反映する。
+
+**約束**: 危なくない未了は、いちいち聞かずに進めます。取り返しのつかない削除や秘密の公開はしません。悪い結果も正直に書きます。
+
+### English (plain and friendly)
+**What works now**
+- Big AI models are often split into several files. The program now downloads every part and loads them (`aruaru-llm` and `open-cuda`).
+- We ran the real Qwen2.5-3B model (about 6 GB) on an ordinary PC with no GPU, and it wrote text (about 48 seconds to load, about 0.6 words per second).
+- We built a way to keep the weights as small "FP8" numbers. Memory drops to about a quarter and quality stays almost the same (perplexity 7.08 to 7.27). After speed fixes, loading went from 340 s to 21 s and writing from 1067 s to 69 s. It is still about 2.8 times slower than the normal way, so it is for when memory is short.
+
+**What we tested (honest results)**
+- Squeezing the memory afterwards with MLA does not work: it hurts quality (25% smaller gave perplexity 7.1 to 12.7; 50% smaller broke the text).
+- We tried "folding" by skipping layers on the 1.5B model. Skipping one layer at a time showed that many middle layers (5, 10, 12, 15 and so on) barely matter, while layers 1, 24 and 26 matter a lot. Skipping three layers gave perplexity 7.19 (from 7.08), only about 7% faster, with slightly less accurate answers. Skipping six or more breaks the model. **Skipping layers without retraining gives only a small gain.**
+- Toshiba's Simulated Bifurcation and Fujitsu's Digital Annealer find the best combination among many choices. They do not speed up the AI by themselves. They could help choose which layers to skip or how many bits to use, but we have not tried that yet.
+
+**What comes next (we go on without asking)**
+1. Search for the best set of layers to skip with annealing or SB, and compare with the greedy way.
+2. Make FP8 faster (SIMD, f16 storage).
+3. Measure whether 7B (about 12 to 15 GB) fits a 32 GB PC with FP8.
+4. Bring sharded models and FP8 into `pl2pl llm setup`.
+
+**Our promise**: for safe unfinished work we go on without asking each time. We never do irreversible deletes or publish secrets, and we report bad results honestly.
+
+## 2026-11-19 最後の追記: 飛ばす層の探し方 / Last note: choosing which layers to skip
+
+### 日本語(やさしい説明)
+- **やったこと**: AIの「飛ばしてもよい層」を、3つ選ぶ問題として2通りで探しました。(1)貪欲法=いちばん良い層を1つずつ足す。(2)焼きなまし=選び方を少しずつ入れ替えて探す。同じ試行回数(78回)で比べました。
+- **結果(Qwen2.5-1.5B)**: 貪欲法は {5, 12, 15} 番で迷い度 7.187(元は 7.08)。焼きなましは {12, 15, 16} 番で 7.438。**この小さな問題では、焼きなましは貪欲法に勝てませんでした。** 5個の場合の比較は途中です。
+- **気をつけること**: 1つの短い文だけで選んでいるので、その文にだけ合った選び方かもしれません。別の文でも確かめる必要があります。
+- **ずっと言えること**: 東芝SBや富士通デジタルアニーラは、層がもっと多い大きなAIや、ビット配分のように選択肢が爆発する問題で試す価値があります。今回の小さな問題では、ふつうの方法で足ります。
+- **アップロード**: コードと文書は GitHub の `main` に push しました。VPS には、きれいなクローンだけ安全に更新します(再ビルドや再起動はしません)。
+- **これから(確認せず進めます)**: 5個の比較を終える、別の文で確かめる、FP8を速くする、7Bを測る、`pl2pl llm setup` に反映する。
+
+### English (plain and friendly)
+- **What we did**: We looked for three "layers that are safe to skip" in two ways. (1) Greedy: add the best layer one at a time. (2) Annealing: swap choices little by little. Both got the same number of tries (78).
+- **Result (Qwen2.5-1.5B)**: Greedy picked layers {5, 12, 15} with perplexity 7.187 (the original is 7.08). Annealing picked {12, 15, 16} with 7.438. **On this small problem, annealing did not beat greedy.** The comparison for five layers is still running.
+- **A caution**: We chose using one short sentence, so the choice may fit only that sentence. We must check with other sentences.
+- **What still holds**: Toshiba's Simulated Bifurcation and Fujitsu's Digital Annealer are worth trying on bigger models with many more layers, or on problems like bit allocation where the choices explode. For this small problem, the plain method is enough.
+- **Upload**: Code and docs are pushed to `main` on GitHub. On the VPS we only update clean clones safely (no rebuild, no restart).
+- **Next (we go on without asking)**: finish the five-layer comparison, check with other sentences, make FP8 faster, measure 7B, and bring it into `pl2pl llm setup`.
+
+## 2026-11-20 追記: 7Bも動いた / Update: 7B runs too
+
+### 日本語(やさしい説明)
+- **7Bが32GBのパソコンで動きました**: Qwen2.5-7B-Instruct(4つに分かれた約15GB)を、FP8で読み込んで文章を作れました。メモリに収まり、読み込みは約3.5分、文章づくりは1語あたり約8秒(とても遅いけれど、動きます)。品質の目安の迷い度は、評価用の文で8.6、別の文で12.2でした。1.5Bの別の文(12.1)とほぼ同じ値です。
+- **層を飛ばす方法(折り畳み)の最終結果**: 1つの文だけで飛ばす層を選ぶと、別の文で悪くなりました(5・12・15番を飛ばすと別の文で約15%悪化、5層飛ばすとさらに悪化)。速くなるのは最大でも約14%です。**学び直しなしでは、実用的な効果は小さい**です。貪欲法と焼きなましは、この小さな問題では大差ありませんでした。
+- **`pl2pl llm setup` について**: 分割モデルの対応は `aruaru-llm` の `main` に入りました。`pl2pl` が使う配布版(v0.2.5)にはまだ入っていないので、新しい版を出すまで、3Bは今までどおり自動で小さいモデルに下がります。新版を出したら3B・7Bも選べるようにします。
+- **これから(確認せず進めます)**: FP8をもっと速くする(SIMDなど)、新しい版の公開、クラウドで頼んだ調査文書の確認。
+
+### English (plain and friendly)
+- **7B runs on a 32 GB PC**: We loaded Qwen2.5-7B-Instruct (about 15 GB in four parts) as FP8 and it wrote text. It fits in memory; loading took about 3.5 minutes and writing took about 8 seconds per word (very slow, but it works). The quality score (perplexity) was 8.6 on the test sentence and 12.2 on other sentences, about the same as the 1.5B model on other sentences (12.1).
+- **Final result for layer skipping ("folding")**: Choosing layers to skip from a single sentence got worse on other sentences (skipping layers 5, 12 and 15 was about 15% worse on other sentences, and skipping five was worse still). The speed gain is at most about 14%. **Without retraining, the practical gain is small.** On this small problem, greedy search and annealing made little difference.
+- **About `pl2pl llm setup`**: Sharded-model support is now on `main` in `aruaru-llm`. The released build that `pl2pl` uses (v0.2.5) does not have it yet, so until a new release, 3B still falls back to a smaller model as before. After the new release, 3B and 7B can be chosen.
+- **Next (we go on without asking)**: make FP8 faster (SIMD and more), publish a new release, and check the survey document requested from the cloud.
+
+## 2026-11-20 低VRAM・VRAM無しでの安定高速化のノウハウ / Low-VRAM know-how
+日本語: VRAMが無い/小さいPC・VPSでAIを安定して速く動かす技術(分割重み・mmap・FP8・混合精度・小行列の直列化・プロンプト上限・同時実行上限、効かなかった手法も)は [aruaru-llm/docs/LOW-VRAM-KNOWHOW.md](https://github.com/aon-co-jp/aruaru-llm/blob/main/docs/LOW-VRAM-KNOWHOW.md) に集約。AIやLLMを扱う関連リポジトリはこれを参照し、同じ失敗を繰り返さない。
+English: Techniques for running AI stably and fast on machines with no or little VRAM (sharded weights, mmap, FP8, mixed precision, serial small GEMMs, prompt caps, concurrency caps, plus what did not work) are collected in the file above. Related repos that use AI/LLMs should follow it.

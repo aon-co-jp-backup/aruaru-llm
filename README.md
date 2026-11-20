@@ -1,0 +1,1133 @@
+# aruaru-llm
+
+*日本語*: これは原文です ·
+*English*: [README-English.md](README-English.md) ·
+*Other languages*: [Deutsch](README-German.md) · [Italiano](README-Italian.md) ·
+[Français](README-French.md) · [Русский](README-Russian.md) ·
+[Українська](README-Ukrainian.md) · [עברית](README-Hebrew.md) ·
+[فارسی](README-Persian.md) · [العربية](README-Arabic.md)
+
+> 📌 **最近の更新(2026-09-13続き)**: `open-cuda`側の`DeepseekModel`へ
+> DeepSeekMoE(共有エキスパート+top-kルーティング)が実装され、理論上
+> `scoring_func="softmax"`構成(V2-Lite相当)ならMoE層も含めエンドツー
+> エンドでロードできる設計になった。**ただし正直な開示**: 実機
+> ダウンロード・ロード検証はまだ行っておらず(15.7Bパラメータ、この
+> 開発機では推論実行自体が非現実的)、そのため自動ダウンロードカタログ
+> (`DEEPSEEK_CATALOG`)はまだ追加していない——実機検証を終えてから
+> 追加する方針。詳細は[CLAUDE.md](CLAUDE.md)参照。
+>
+> 📌 **最近の更新(2026-09-13)**: `open-cuda`側に新設された本物の
+> DeepSeek-V2/V3 Multi-head Latent Attention (MLA) アーキテクチャ
+> (`open-cuda-llm::DeepseekModel`)を`qwen_generation.rs`と同じ設計で
+> `deepseek_generation.rs`として実配線した。`POST /v1/deepseek/select
+> { "dir": "..." }`・`POST /v1/generate-deepseek`・
+> `GET /v1/deepseek/status`を新設(既存エンドポイントは無改修)。
+> **正直な開示**: Qwenの`QWEN_CATALOG`のような自動ダウンロードカタログ
+> は意図的に設けていない——実在する公開DeepSeekチェックポイントは
+> ほぼ全層MoEで、現行の`DeepseekModel::load`はMoE層を読めないため、
+> ダウンロードすればそのまま動くリポジトリを正直に提示できない
+> (対応するにはMoE実装が別途必要、`open-cuda`のPORTING.md参照)。
+> `select`はローカルに用意した互換チェックポイントのディレクトリを
+> 直接指定する方式にした。詳細は[CLAUDE.md](CLAUDE.md)の2026-09-13
+> HANDOFF追記参照。
+>
+> 📌 **最近の更新(2026-09-11)**: `open-cuda-llm::QwenModel`(Qwen2/
+> Qwen2.5系、RoPE+GQA+RMSNorm+SwiGLU)を`GET/POST /v1/qwen/*`・
+> `POST /v1/generate-qwen`として実配線した(既存の`/v1/generate`・
+> GPT-2系エンジンは無改修)。実機検証済み(Qwen2.5-0.5B-Instruct)。
+> 併せて推奨モデル・サイズ切替のメッセージを日英併記化、AI/LLM関連
+> ニュースを英語・日本語・簡体字中国語・繁体字中国語の4言語で取得する
+> `/v1/news/ai-refresh`・`/v1/news/ai-latest`を新設。詳細は
+> [CLAUDE.md](CLAUDE.md)の2026-09-11 HANDOFF追記参照。
+>
+> 📌 **最近の更新(2026-09-03)**: ユーザー指示「open-directx/open-cuda/
+> aruaru-llmで、今後32GB VRAM級のNVIDIA/AMD/Intel GPUを想定し、
+> F16/F32/F64、さらにF128まで見据えて開発する」への対応として、
+> `src/hardware.rs`のVRAM推奨ヒューリスティックへ`InferencePrecision`
+> (F16/F32/F64/F128、バイト/パラメータ)を導入。同じVRAM容量でも
+> fp16推論なら約2倍のパラメータ数のモデルが収まる、という実際の
+> デプロイ最適化を反映できるようにした(既存`recommend_id_for_vram`は
+> F32既定で委譲、後方互換)。**正直な開示**: F128はGPU上のネイティブ
+> 対応が存在しないためソフトウェアエミュレーション前提であり、
+> open-cuda側`KernelArg`型システムとの一貫性のためだけに用意した
+> 計算上の概念(実用的な推論精度ではない)。9/9テストgreen。詳細は
+> [CLAUDE.md](CLAUDE.md)参照。
+>
+> 📌 **最近の更新(2026-08-26続き)**: `/v1/generate-with-search`の
+> プロンプト組み立てを、検索結果を単純連結するだけの旧書式から
+> `"Search results: ...\nQuestion: {prompt}\nAnswer:"`というQA形式
+> (`web_search::build_search_augmented_prompt`)へ変更した。GPT-2の
+> 事前学習コーパスに多いQ&A形式のパターン補完に乗せることで、検索
+> 結果を踏まえた応答が出やすくなることを狙った改善の試みであり、
+> **確実に検索結果を活用するようになったことを保証するものではない**
+> (GPT-2/distilgpt2は指示追従のファインチューニングを受けていないため)。
+> instruction-tunedモデルへの切替・要約段階の追加は調査未完了のため
+> 見送り、次回セッションの課題とした。**この改善はプロンプト文字列の
+> 組み立て方の変更のみであり、open-directx/open-cuda(GPU推論の
+> 「速度」基盤)には一切手を加えていない**——応答の「精度」とGPU
+> 推論の「速度」は引き続き別の話である。詳細は
+> [CLAUDE.md](CLAUDE.md)の2026-08-26追記(続き4)参照。
+>
+> 📌 **最近の更新(2026-08-26)**: Windows用インストーラー
+> `aruaru-llm-installer.exe`を新設(管理者権限のPowerShellを手動で
+> 立ち上げる必要なし)。open-cuda/open-directxのVulkan/DirectXバック
+> エンドを組み込んだGPU版を任意でインストール可能(既定は未チェック
+> ——実測でCPU版より遅いGPUがあることが分かっているため)、インストール
+> 中に推奨モデルサイズを検出しYes/No/Cancelで選べるダイアログ付き。
+> 詳細は[CLAUDE.md](CLAUDE.md)の2026-08-26エントリ参照。
+>
+> 📌 **更新(2026-08-25)**: (1) Google検索APIキーをリクエスト単位で
+> 指定できるようにした(`POST /v1/generate-with-search`の任意フィールド
+> `google_search_api_key`/`google_search_cx`)——複数の訪問者が同じ
+> インスタンスを共有するデプロイ(VPS等)で、ある訪問者のキー設定が
+> 他の訪問者の検索へ影響しないようにするための修正。(2) ブラウザ内AI
+> 実行(WASM+WebGPU)構想の技術検証・段階的導入計画を策定(未実装、計画
+> 段階)。いずれも詳細は[CLAUDE.md](CLAUDE.md)の2026-08-25エントリ参照。
+>
+> 📌 **更新(2026-08-10)**: `open-cuda`側`GptModel::
+> generate_with_repetition_penalty`(CTRL方式の繰り返しペナルティ)を
+> `/v1/generate`へ配線し、**既定で有効化**した(`ARUARU_LLM_REPETITION_
+> PENALTY`環境変数、既定値`1.3`、`1.0`にすると従来のペナルティ無し挙動)。
+> 対話ファインチューニング無しの素のGPT-2貪欲デコードが陥る既知の劣化
+> モード(同一文字列の無限ループ、例: `open-english`利用中のユーザー報告
+> 「しつこく繰り返すバグ」——"Student: Hello"を延々繰り返す)への根本対応。
+> `open-cuda`側の実GPT-2 124M重みでのテストで、ペナルティ無しでは実際に
+> ループへ陥ること・`penalty=1.3`で実際にループが解消し文法的に自然な
+> 会話文へ変わることを確認済み。実HTTPでも
+> `POST /v1/generate {"prompt":"...Student: Hello\nTrainer:",
+> "max_new_tokens":24}` → `"I'm sorry for the delay in your appointment
+> but it's not too late to get back on track! Thank you so"`のように、
+> 反復なしの応答が返ることを確認した。`penalty=1.0`時は`generate()`
+> (既存API)と完全に同一の出力になるため既存の他テストへの回帰は無い。
+> 詳細は[CLAUDE.md](CLAUDE.md)参照。
+>
+> *English*: Wired `open-cuda`'s new `GptModel::generate_with_repetition_
+> penalty` (CTRL-style repetition penalty) into `/v1/generate`, **enabled
+> by default** (`ARUARU_LLM_REPETITION_PENALTY` env var, default `1.3`;
+> set to `1.0` to restore the old no-penalty behavior). This directly
+> addresses a known GPT-2 base-model degeneracy — endless repetition of
+> the same string (e.g. a user reported it looping "Student: Hello"
+> forever while using `open-english`) — since the base model has no
+> dialogue fine-tuning. Verified on real GPT-2 124M weights on the
+> `open-cuda` side: without the penalty the loop actually reproduces;
+> with `penalty=1.3` it stops and produces grammatically natural
+> conversational text instead. Also verified via a live HTTP request. At
+> `penalty=1.0` the output is byte-identical to the existing `generate()`
+> API, so no other tests regress. See [CLAUDE.md](CLAUDE.md) for details.
+
+> 📌 **最近の更新(2026-08-08)**: `open-cuda`側で実装・実機検証済みだった
+> DeepSeek-V3風MLA(KVキャッシュ低ランク圧縮)を`/v1/generate`へ
+> オプトイン配線(既定off)した。`ARUARU_LLM_ENABLE_MLA_KV_COMPRESSION=1`で
+> 有効化、GPT-2 124Mでhead_dim=64→d_c=16(75%削減)。**正直な開示**:
+> 射影行列が乱数初期化(未学習)のため非可逆圧縮であり、実際に生成品質を
+> 目視で明確に劣化させることを実測で確認した(既定offとした理由)。
+> 追加で、`open-cuda`側にPCA較正版(`enable_mla_kv_compression_calibrated`、
+> 実サンプル文の活性化統計から主成分分析で射影基底を求める)も新設された
+> ため、こちらも`ARUARU_LLM_MLA_CALIBRATED=1`(`ARUARU_LLM_ENABLE_MLA_KV_
+> COMPRESSION=1`と併用)でオプトイン配線した。乱数射影版の反復破綻
+> (例: "...and point of the government"の無限ループ)は回避するが、
+> **非圧縮版と比較すればなお明確に品質が劣化しており**、こちらも既定offの
+> ままとした。詳細は[CLAUDE.md](CLAUDE.md)参照。
+>
+> *English*: Wired an opt-in (default-off) MLA-style KV cache compression
+> path (`open-cuda`'s DeepSeek-V3-inspired implementation) into
+> `/v1/generate` via `ARUARU_LLM_ENABLE_MLA_KV_COMPRESSION=1`. For GPT-2
+> 124M this is head_dim=64 -> d_c=16 (75% smaller per-token KV storage).
+> **Honest disclosure**: the projection matrices are randomly initialized
+> (untrained), so this is lossy, and measured testing confirmed it
+> visibly degrades generation quality — which is why it defaults off.
+> `open-cuda` has since added a PCA-calibrated variant
+> (`enable_mla_kv_compression_calibrated`, basis derived from real
+> activation statistics via PCA instead of random init), wired here via
+> `ARUARU_LLM_MLA_CALIBRATED=1` (used together with `ARUARU_LLM_ENABLE_MLA_
+> KV_COMPRESSION=1`). It avoids the random variant's degenerate repetition
+> loops, but quality is still clearly worse than the uncompressed path, so
+> it also defaults off. See [CLAUDE.md](CLAUDE.md) for details.
+
+> 📌 保留タスク(2026-08-06): 東芝SBM・DeepSeek技術の組み込み構想あり。詳細は[CLAUDE.md](CLAUDE.md)参照。
+
+> 📌 **最近の更新(2026-08-07)**: `/v1/chat`・`/v1/classify-security`が
+> 以前`/v1/generate`・`/v1/translate`で見つかった「空入力→503誤判定」
+> バグの影響を受けていないか実バイナリ・実HTTPで検証。両エンドポイント
+> とも空入力で200(フォールバック応答/benign判定)を正しく返すことを
+> 確認、コード変更は不要と判明した。詳細は[CLAUDE.md](CLAUDE.md)参照。
+>
+> *English*: Verified via a real running binary + live HTTP requests that
+> `/v1/chat` and `/v1/classify-security` do **not** suffer the
+> "empty input → 503" bug previously fixed for `/v1/generate` and
+> `/v1/translate` — both correctly return 200 for empty input. No code
+> change was needed.
+
+> **2026-07-25 更新**: 開発方針ファイル(`CLAUDE.md`)の見出しを
+> 「開発方針＆開発環境ルール」から「設計思想＆開発方針＆開発環境ルール」
+> へ改名しました。プロジェクトの設計思想(何を大事にしているか)・
+> 開発方針(どう進めるか)・開発環境ルール(具体的な運用規約)を明確に
+> 区別して記載しています。詳細は`CLAUDE.md`を参照してください。
+
+
+**開発開始日: 2026-07-18**(このリポジトリのGitHub作成日)
+
+Python向けのAIライブラリとLLMをRust向けの書き直しを開始しました。
+ベースになったのは、このaruaru-llm(開発途中)＋
+[open-cuda](https://github.com/aon-co-jp/open-cuda)(Windows＋MAC＋LINUX互換
+＆ INTEL＋AMD＋nVIDIA互換を開発途中です)。
+
+`aruaru`エコシステム(aruaru-tokyo・aruaru-db・e-gov.info・karu.tokyo等)
+共通の「AIチャットコマース」応答サービス。各サイトが個別にチャット応答
+ロジックを持つのではなく、このHTTPサービスに問い合わせる構成にすることで、
+将来実際のLLM推論に差し替える際の変更箇所を1箇所に集約する。
+
+> ⚠️ **正直な開示(最重要、2026-07-25更新)**: 2026-07-25、`open-cuda`の
+> `opencuda-llm`クレート(GPT-2 124M実学習済み重み、`openai-community/gpt2`)
+> を統合し、`POST /v1/generate`で**実際に自己回帰的な文章生成が可能**に
+> なった(自己回帰デコーダ未実装、という従来の記述は本エンドポイントに
+> 限り解消)。ただし**GPT-2 124Mは2019年発表の小型モデルであり、GPT-4等
+> 最新の商用LLMと同等の性能・知識は無い**。あくまで「外部LLM API契約
+> 不要の自己完結型AI」としての実証段階。生成テキストは文法的には自然な
+> 英語になることが多いが、意味的に正確とは限らない(幻覚しうる)。
+> `/v1/chat`(意図分類、`opencuda-bert`のエンコーダによる文埋め込み+
+> コサイン類似度、2026-07-21〜)は引き続き軽量・高速な定型応答振り分け
+> 専用で、生成とは役割分担している(無理に統合しない設計)。詳細・理由は
+> [CLAUDE.md](CLAUDE.md)を参照。
+
+## open-cudaは必須の相方(SET) / open-cuda is a required companion (SET)
+
+**日本語**: `aruaru-llm`は単体では成立しない。推論エンジンの本体は
+[`open-cuda`](https://github.com/aon-co-jp/open-cuda)の
+`opencuda-core`/`opencuda-cpu`/`opencuda-blas`/`opencuda-bert`/
+`open-cuda-llm`/`open-cuda-whisper`クレート(GEMM・Attention・
+埋め込み・GPT-2デコーダ・音声認識の実装)であり、`aruaru-llm`は
+それらをCargoの**path依存**(`../open-cuda/crates/opencuda-*`)として
+取り込んでHTTPで公開する薄い層にすぎない。したがって:
+
+- **ソースからビルドする場合**: `aruaru-llm`の隣(1つ上の階層)に
+  `open-cuda`をcloneしておくこと(`F:\...\repository\aruaru-llm`と
+  `F:\...\repository\open-cuda`が並ぶ配置)。CIの`release.yml`は
+  ビルド直前に`open-cuda`を自動cloneする。`RPoem`・`RS-JSON`等、他の
+  sibling path依存も同様。
+- **`aruaru-llm`を組み込む(HTTP経由で呼ぶ)側のリポジトリ**
+  (`open-english`等)も、`aruaru-llm`のビルド成果物を配布・実行する
+  以上、この`open-cuda`同梱の前提を必ず引き継ぐこと——`open-cuda`は
+  別プロセスではなく`aruaru-llm`バイナリへ静的リンクされるため、
+  リリース済みバイナリを使う限り追加のインストールは不要だが、
+  ソースから組む配布物では`open-cuda`のcloneが前提になる。
+- **配布バイナリ**: `aruaru-llm`の実行ファイルには`opencuda-*`の
+  コードが既に静的に含まれる(別途`open-cuda`をインストールする必要は
+  ない)。Vulkan/DirectXのGPUバックエンドだけは
+  `--features hw-detect-vulkan,real-vulkan,hw-detect-directx,real-dx12`
+  でビルドした場合のみ有効(`aruaru-llm-installer.exe`の`installgpu`
+  タスク、既定オフ)。
+
+**English**: `aruaru-llm` is not usable on its own. The actual
+inference engine lives in
+[`open-cuda`](https://github.com/aon-co-jp/open-cuda) — the
+`opencuda-core` / `opencuda-cpu` / `opencuda-blas` / `opencuda-bert` /
+`open-cuda-llm` / `open-cuda-whisper` crates (GEMM, attention,
+embeddings, the GPT-2 decoder, speech recognition). `aruaru-llm` pulls
+them in as Cargo **path dependencies** (`../open-cuda/crates/opencuda-*`)
+and is only a thin layer that exposes them over HTTP. Therefore:
+
+- **Building from source**: check out `open-cuda` next to `aruaru-llm`
+  (one directory up, so `.../repository/aruaru-llm` and
+  `.../repository/open-cuda` sit side by side). CI's `release.yml`
+  clones `open-cuda` automatically right before the build. The same
+  applies to the other sibling path deps (`RPoem`, `RS-JSON`, …).
+- **Repositories that consume `aruaru-llm`** (e.g. `open-english`) —
+  since they distribute and run `aruaru-llm` build artifacts, they
+  inherit this open-cuda requirement. `open-cuda` is statically linked
+  into the `aruaru-llm` binary (not a separate process), so a released
+  binary needs no extra install; a source-built distribution needs the
+  `open-cuda` checkout.
+- **Released binary**: the `aruaru-llm` executable already contains the
+  `opencuda-*` code statically (no separate `open-cuda` install). Only
+  the Vulkan/DirectX GPU backends require a build with
+  `--features hw-detect-vulkan,real-vulkan,hw-detect-directx,real-dx12`
+  (the `installgpu` task in `aruaru-llm-installer.exe`, off by default).
+
+## open-cudaとのSET構成
+
+[`open-cuda`](https://github.com/aon-co-jp/open-cuda)(このエコシステムの
+GPUランタイム)の`opencuda-core`/`opencuda-cpu`/`opencuda-blas`/
+`opencuda-bert`をpath依存として使う。`/v1/chat`へのリクエストごとに、
+`opencuda-bert`がmultilingual-e5-smallのforward passを実行してメッセージを
+埋め込みベクトルへ変換し(内部で`opencuda-blas`のGEMM/Attentionカーネルを
+実際に呼び出す)、各インテント代表文の埋め込み(起動時に一度計算しキャッシュ)
+とのコサイン類似度で意図分類する。Cargo依存だけの見せかけの連携ではなく、
+実行時に本当にopen-cudaの演算パイプラインを通る(2026-07-22、実際に
+サーバーを起動し`POST /v1/chat`への応答を確認して検証済み)。
+
+ただし、これは本物のニューラルLLM推論(対話文生成)ではない。エンコーダの
+forward passのみで、自己回帰デコーダは未実装。GPU専用の高速パス
+(`GemmPath::CuBlas`/`RocBlas`/`OneMkl`)も引き続きスタブのまま(CPU/
+Vulkan汎用パスは実装済み)。詳細はopen-cuda側の`CLAUDE.md`のHANDOFF節を
+参照。
+
+**2026-07-25追記(可用性フォールバック)**: `models/multilingual-e5-small/`
+(470MB超)が未取得・ロード失敗の環境でもサービスを完全停止させないよう、
+`scoring::classify`が自動的に旧bag-of-wordsドット積(`src/bow_fallback.rs`)
+へフォールバックするようにした。`/v1/chat`の`engine`フィールドには実際に
+使われた経路(`embedding-cosine-v0-opencuda-bert-cpu`または
+`bow-dotproduct-v0-opencuda-cpu-fallback`)を常に正直に返す——分類精度は
+フォールバック時に明確に下がる(意味理解ではなくキーワード一致のため)。
+
+## API
+
+- `POST /v1/chat` — `{"message": "...", "tenant": "..."(任意)}` → `{"reply": "...", "engine":
+  "...", "matched_intent": "..."}`(意図分類、軽量・高速な定型応答)
+- `POST /v1/generate` — `{"prompt": "...", "max_new_tokens": 16(任意、既定16、上限128), "tenant": "..."(任意)}`
+  → `{"completion": "...", "engine": "gpt2-124m-greedy-decode-v0-opencuda-llm-cpu", "disclosure": "..."}`
+  (GPT-2 124M実重みによる自己回帰生成、本格的だが重い。**繰り返しペナルティ
+  既定値`1.3`**〈`ARUARU_LLM_REPETITION_PENALTY`で上書き可、`1.0`で無効化〉
+  で同一文字列の無限ループを防止。プロンプトは英語推奨——
+  GPT-2のBPE語彙は英語中心のため。実験例:
+  `{"prompt": "The quick brown fox", "max_new_tokens": 16}` →
+  `"completion": "es are a great way to get a little bit of a kick out of your"`)。
+  **2026-08-07修正**: `prompt`が空文字列(または空白のみ)の場合は
+  `400 Bad Request`(`{"error": "prompt must not be empty", "engine": "..."}`)
+  を即座に返すようにした——以前はトークナイザが0トークンにエンコード
+  した後の内部エラーが`503 Service Unavailable`としてそのまま返っており、
+  呼び出し側から見て「サーバー障害」なのか「自分の入力が不正」なのか
+  区別できず不便だったための修正(実HTTPで`400`が返ることを検証済み)。
+- `GET /v1/models/catalog` — インストール可能なGPT-2アーキテクチャ互換モデル
+  (`gpt2`/`distilgpt2`/`gpt2-medium`/`gpt2-large`/`gpt2-xl`〈2026-07-27追加〉)
+  の一覧・インストール済みID・現在使用中のモデルディレクトリを返す
+  (2026-07-26追加)。
+- `POST /v1/models/install` — `{"id": "distilgpt2"}`のようにカタログから
+  選択したモデルをHugging Faceからダウンロードする(2026-07-27追加)。
+- `POST /v1/models/select` — `{"id": "distilgpt2"}`でダウンロード済みの
+  モデルへ**プロセス再起動無しで**切り替える(2026-07-27追加、読み込みに
+  成功した場合のみ切り替わる設計——失敗時は現在動作中のモデルを維持)。
+  正直な開示: このカタログ・切り替え機能はGPT-2アーキテクチャ互換モデル
+  限定(Llama/Mistral/Qwen等、アーキテクチャの異なるモデルは現行エンジン
+  ではロードできない)。詳細は`CLAUDE.md`参照。
+- `POST /v1/translate`(2026-08-04追加) — `{"text": "...", "target_lang":
+  "Japanese", "source_lang": "..."(任意), "tenant": "..."(任意)}` →
+  `{"translation": "...", "engine": "...", "disclosure": "..."}`。
+  **翻訳プラグイン(`nllb-translate` feature)がインストールされていれば**
+  専用翻訳モデル(M2M100、`rust-bert`経由)で高品質な翻訳を行い、
+  **インストールされていなければ**GPT-2流用の簡易実装(実用に耐えない
+  ことが実HTTP検証で判明済み、常にその旨を`disclosure`に明記)へ自動
+  フォールバックする。詳細は下記「翻訳プラグイン」節参照。
+  **2026-08-07修正**: `text`または`target_lang`が空(空白のみ含む)の
+  場合は`400 Bad Request`を即座に返す(`/v1/generate`と同じ理由、
+  実HTTPで検証済み)。
+- `POST /v1/transcribe`(2026-08-29追加) — `{"pcm_f32_base64": "...",
+  "sample_rate": 16000, "language": "auto"(任意), "prompt": "直前の文脈"(任意), "tenant": "..."(任意)}` →
+  `{"transcript": "...", "language": "...", "engine": "...", "disclosure": "..."}`。
+  `pcm_f32_base64`は16kHz mono の f32 PCM をリトルエンディアンバイト列に
+  して base64 化したもの(`open-english`の`blobToPcm16k()`が生成する形式)。
+  **whisper.cpp のプレビルド CLI(`whisper-cli`)と GGML Whisper モデルが
+  実在すれば**それを子プロセス起動して書き起こし、**無ければ**`503` +
+  入手先(whisper.cpp releases)を案内するエラーを返す。詳細は下記
+  「音声認識」節参照。`sample_rate`が16000以外・base64不正・10分超の音声は
+  いずれも`400`。
+- `GET /v1/recommend`（2026-07-27追加、精度パラメータは2026-09-05追加） —
+  `open-cuda`(Vulkan)/`open-directx`(DXGI)経由のハードウェア検出
+  (VRAM容量)から推奨モデルサイズを算出する(ダウンロードは行わない)。
+  任意の`?precision=f16|f32|f64|f128`クエリで、パラメータあたりの
+  バイト数を変えた見積もり(F16なら同じVRAMでF32の約2倍のパラメータ数
+  まで許容)を要求できる(未指定時は`f32`、後方互換)。不正な値は`400`。
+  `{"hardware": {"gpu_detected":bool,
+  "detection_path":"vulkan"|"directx"|"cpu-only-fallback",
+  "gpu_name":"...","vram_bytes":...,"cross_check_agreement":bool|null},
+  "recommended_model_id":"gpt2-medium","precision_used":"f32",
+  "disclosure_ja":"..."}`のような形。**正直な開示**: この精度は見積もり
+  計算にのみ使われ、実際のモデルロード時dtype選択(`open-cuda-llm`側)へは
+  まだ配線されていない(`open-cuda-llm`は依然F32中心のロード実装のため)。
+- `POST /v1/recommend-and-download`（2026-07-27追加、「お勧めLLMを
+  ダウンロード」ボタンの受け口） — ハードウェア検出→推奨サイズ算出→
+  未ダウンロードならHugging Faceから取得(既にあれば再取得しない)→
+  取得後は自動的に`/v1/generate`用へホットスワップ切り替え、まで一括で
+  行う。`{"recommendation": {...}, "already_installed":bool,
+  "switched_to_recommended":bool, "message_ja":"..."}`を返す。
+- `GET /` （2026-07-27追加） — 「お勧めLLMをダウンロード」ボタン1つ+
+  進捗表示+切り替え後の生成テスト導線を持つ、最小限の静的HTML UI
+  (`static/index.html`、フレームワーク不使用)。
+- `POST /v1/models/layer-redundancy`（2026-09-01追加、**読み取り専用**）
+  — `{"sample_prompts": [...]（任意、省略時は既定の8文）}` →
+  現在アクティブなモデルの各層のBlock Influence
+  (ShortGPT論文arXiv:2403.03853/Gromov et al. arXiv:2403.17887方式、
+  1に近いほど恒等写像に近く冗長)を計算する。モデルは一切変更しない。
+- `POST /v1/models/fold-layers`（2026-09-01追加、**モデルを実際に変更**）
+  — 実際に層を除去(または置換)し、稼働中のモデルを差し替える。
+  折りたたみ前後の同一プロンプトへの生成結果を両方返すので、品質劣化の
+  有無を自分の目で確認できる。3つのモードがある:
+  1. **既定(独立閾値)**: `{"block_influence_threshold": 0.01}`
+     (未指定時の既定値)——各層を個別にBIで判定し閾値未満の層を寄せ集めて
+     除去する。閾値を緩めると除去する層数が多い場合に非最適な組み合わせを
+     選びがちなので、2層以上まとめて除去したい場合は下記2を推奨。
+  2. **連続ブロック探索**(Gromov et al.方式): `{"num_layers_to_remove": 2}`
+     ——削除したい層数を固定し、その本数の連続する層の中で除去による
+     影響が最小になる1つのブロックだけを選んで除去する。レスポンスに
+     `quality_hint`(`block_similarity`に基づく事前の品質見込み)を含む。
+  3. **線形アダプタ**(SHIFT-LLM/SlimLLM着想):
+     `{"num_layers_to_remove": 2, "use_linear_adapter": true}` ——
+     除去ブロックを跡形もなく消すのではなく、最小二乗法(閉形式のリッジ
+     回帰、勾配降下法は使わない)でフィットした軽量な線形層へ置換する。
+     実測(distilgpt2、6層中5層除去という極端な予算)で、旧方式が完全な
+     劣化ループに陥ったのに対しこちらは劣化ループを回避し実在の単語を
+     使った出力を生成することを確認済み(**ただし完全な修正ではない**、
+     出力は依然として文法的に一貫した文章にはならない)。
+  **正直な開示(最重要)**: 「DeepSeekの折りたたみ理論(Model Folding)」
+  という技術は日英2言語調査の結果**実在しないと判明した**(DeepSeekの
+  実際の効率化技術はMLA・FP8混合精度・DeepSeekMoEであり、いずれも
+  「折りたたみ」ではない)。混同の元と考えられる無関係のICLR 2025論文
+  「Model Folding」(arXiv:2502.10216、ニューロン単位k-meansクラスタ
+  リング)の忠実な再現ではなく、より実装・検証が現実的な代替手法
+  (層単位の冗長性検出・除去)を実装したものである。詳細は
+  `CLAUDE.md`のHANDOFF(2026-09-01)参照。
+- `POST /admin/tenants` / `GET /admin/tenants` / `DELETE /admin/tenants/:host` — テナント登録管理(`x-admin-token`ヘッダ認証)
+- `GET /healthz` — ヘルスチェック
+
+### ハードウェア検出→推奨LLMサイズ（2026-07-27新設）
+
+`open-directx`(DXGIアダプタ列挙)・`open-cuda`(`opencuda-vulkan`の
+Vulkan物理デバイス列挙)いずれかの実GPU検出結果(VRAM容量)を使い、
+GPT-2ファミリーの複数サイズ(124M/355M/774M/1.5B)から推奨サイズを選ぶ
+簡易ヒューリスティックを`src/hardware.rs`に実装した。VRAM 2GB未満→124M、
+2-4GB→355M、4-8GB→774M、8GB以上→1.5B、GPU検出不能・CPUのみ→124M固定
+(安全側フォールバック)。**正直な開示**: これはモデルサイズ(パラメータ数×
+4バイトのfp32概算)とVRAM容量の単純な比較に基づく目安であり、精密な
+性能予測ではない(KVキャッシュ・アクティベーション等の実消費は含まない)。
+
+GPU検出は既定では無効（`hw-detect-vulkan`/`hw-detect-directx`という
+opt-in Cargo feature、CPUのみの環境やクロスコンパイル環境でVulkan
+ローダー/Windows SDKへの依存を強制しないため）。有効にした場合、Vulkan
+経路を優先し、両方有効ならDXGI(DirectX)側の結果をクロスチェックとして
+ログへ記録する(`cross_check_agreement`フィールド)。**実機検証済み**:
+このマシン(NVIDIA GeForce GT 730)で`--features hw-detect-vulkan`を
+有効にして実行したところ、`vram_bytes=2104819712`を取得——これは
+`open-cuda`側`CLAUDE.md`のHANDOFF(DXGI経由の同一実機での実測値)と
+完全一致する値であり、Vulkan/DirectX両経路が同一ハードウェアに対し
+同じVRAM量を報告することを確認した。
+
+```
+cargo run --release --features hw-detect-vulkan
+# または Windows専用: --features hw-detect-directx
+```
+
+### バックエンド行列(llama.cpp に倣った正直な一覧、2026-09-03)
+
+`GET /v1/runtime` の `backend_matrix` フィールドがこの表を実行時の
+`status` 付きで返す(**報告のみ**、この行列は挙動を変えない)。正本は
+[`open-cuda/OmniGPU-Design.md`](https://github.com/aon-co-jp/open-cuda/blob/main/OmniGPU-Design.md)
+§11.6 / §12.3。
+
+| バックエンド | 状態 | 備考 |
+|---|---|---|
+| **cpu-simd** | 実装済み(常時ビルド) | `open-cpu` 実行時ディスパッチ。AVX2+FMA3 でスカラー比 実測 約3.34倍。GPU 段へオフロードされない全処理を担う |
+| **vulkan-spirv** | 実装済み(`--features real-vulkan`) | `open-cuda` の SPIR-V compute。**移植性の背骨**(Linux/Windows の NVIDIA/AMD/Intel、macOS は MoltenVK 経由)。既知課題は下記 |
+| **directx-dxil** | 実装済み(`--features real-dx12`) | `open-cuda` の D3D12/DXIL、密 GEMM のみ。Vulkan が無い Windows 向けフォールバック。GT 730 では CPU SIMD より遅い(実測) |
+| **cuda** | 非対応 | `open-cuda` にネイティブ CUDA/cuBLAS バックエンドは無い(`GemmPath::CuBlas` はスタブ)。NVIDIA GPU も Vulkan 経路で動く |
+| **metal** | 設計方針のみ | Apple GPU は MoltenVK(Vulkan サブセット on Metal)経由で既存 SPIR-V カーネルのまま到達。新バックエンドは書かない。実機検証保留 |
+| **hip-rocm** | 設計方針のみ | AMD ネイティブ(hipBLASLt)。任意の高速化経路。AMD の移植性経路は Vulkan + `VK_EXT_shader_float8`(Adrenalin 25.10.2 以降で出荷) |
+| **sycl-levelzero** | 設計方針のみ | Intel Arc/Xe ネイティブ(oneAPI Level Zero)。任意。Intel GPU は現状 Vulkan/SPIR-V 経路でカバー |
+| **webgpu-wasm** | 設計方針のみ | wgpu/WebGPU ブラウザ推論(W3C Candidate Recommendation Draft、2026-05)。将来オプション |
+
+**設計哲学**: Vulkan + SPIR-V を移植性の背骨とし、CUDA/HIP/SYCL/Metal は
+「任意の高速化経路」であって前提にしない。ベンダー ID で実行経路を
+分岐せず、能力交渉(`supports_spirv` / `supports_fp8_tensor_core` 等)で
+機能を選ぶ。
+
+### 実推論ディスパッチ先としてのVulkan(`real-vulkan` feature、2026-08-04新設、既知の未解決課題あり)
+
+上記のハードウェア検出(`hw-detect-vulkan`)とは別軸で、`/v1/generate`の
+実際の推論計算そのものをGPU(Vulkan)へディスパッチするオプトイン
+feature`real-vulkan`を追加した。既定では無効(CPUのみ)、有効時は
+`main()`のデバイス選択が`opencuda_vulkan::real::VulkanDevice`に切り替わる
+(構築失敗時はCPUへ自動フォールバックし、サービスを壊さない設計)。
+
+```
+cargo run --release --features real-vulkan
+```
+
+**正直な開示(重要、未解決の既知バグ)**: 実機(NVIDIA GeForce GT 730)で
+検証したところ、デバイス選択自体は正しく機能する(起動ログに
+`OpenCUDA Vulkan Device (NVIDIA GeForce GT 730)`が出る)が、
+`POST /v1/generate`への実リクエストは**約0.2秒で即座にエラー失敗する**。
+原因は`open-cuda`側`open-cuda-llm`クレートの`Linear::forward`が
+`opencuda_blas::sgemm`へ`spirv`引数を常に`None`で渡しており、
+`GemmPath::VulkanGeneric`選択時に必須のコンパイル済みシェーダバイト列
+(`matmul.spv`)が渡っていないため。これは「配線しても遅い」という
+以前の設計上の懸念より根本的な、単純に**機能しない**という結果であり、
+性能比較のベンチマークはまだ実施できていない。修正には`open-cuda`
+リポジトリ側で`Linear::forward`に`matmul.spv`を配線する変更が必要
+(詳細・次にすべきことは`CLAUDE.md`のHANDOFF 2026-08-04エントリ参照)。
+
+### DeepSeek「Engram」風KVキャッシュ/重みオフロードの検討結果(2026-08-08、見送り)
+
+DeepSeekの技術のうち、静的な知識(KVキャッシュや重みの一部)をVRAMから
+システムRAMへ退避し必要時に再ロードする「Engram」的な手法を、GT 730の
+ような小VRAM GPU向けに実装できないか検討した。**実コード読解の結果、
+実装を見送った**——理由は「難しいから」ではなく「このリポジトリが依存
+する`open-cuda`側の推論経路には、そもそも退避すべき"VRAM常駐状態"が
+存在しない」ため。`opencuda-blas`のGEMM/Attention/softmax(`sgemm`
+経由でVulkanにディスパッチする箇所すべて)は、呼び出しのたびに
+`ScopedAlloc`(`opencuda-blas/src/lib.rs`)というRAIIガードで
+VRAMバッファをalloc→host→device転送→計算→device→host転送→即freeする
+設計になっており、呼び出しが終わるとVRAM上には何も残らない。GPT-2の
+重み(`GptModel`の`word_embeddings`/各層の`Linear`)もKVキャッシュ
+(`open-cuda-llm::KvCacheHead`の`k`/`v`/`k_latent`/`v_latent`)も、
+実体は最初から最後まで`Vec<f32>`としてシステムRAM上に存在し続けている
+(GPU実行時〈`--features real-vulkan`〉でも同じ)。つまりこのアーキテク
+チャは、意図した設計ではないものの結果として既に「常時システムRAM
+常駐、GPUは演算のたびの一時利用のみ」という、Engramが目指す状態に
+近い形になっている。LRUエビクション等の追加機構を実装しても退避対象が
+無いため、意味のある効果は測定しようがない(誇張しない開示)。詳細・
+読んだコード箇所は`CLAUDE.md`のHANDOFF 2026-08-08エントリ参照。
+
+### 意図分類 vs 生成、どちらを使うか
+
+`/v1/chat`(意図分類)と`/v1/generate`(生成)は目的が異なるため、あえて
+統合していない: `/v1/chat`は定型応答への振り分け専用で軽量・高速
+(埋め込みモデルのforward passのみ)、`/v1/generate`はGPT-2 124M
+(548MBの重み)を使う本格的だが重い自由文生成。用途に応じて使い分けること。
+
+## 翻訳プラグイン(`nllb-translate` feature、2026-08-04追加)
+
+`POST /v1/translate`のGPT-2流用実装は実HTTP検証の結果、実際の翻訳文を
+生成できず実用に耐えないと判明した(`CLAUDE.md`のHANDOFF参照)。この
+問題を解消するオープンソースの専用翻訳モデル(M2M100、`rust-bert`crate
+経由)を、**Cargo featureによる着脱式プラグイン**として提供する
+(ユーザー指示「翻訳部分だけプラグインという形にして、必要な人だけ
+インストール/アンインストールできるように」への対応)。
+
+- **インストール(有効化)**:
+  ```bash
+  cargo build --release --features nllb-translate
+  ```
+  この場合のみ`rust-bert`+`tch`(libtorch、PyTorchのC++ライブラリ)への
+  依存がビルドに含まれ、`POST /v1/translate`が実際に機能する翻訳文を
+  返すようになる。初回リクエスト時にM2M100モデルの重みを自動ダウンロード
+  する(数百MB、`rust-bert`既定のキャッシュディレクトリへ保存)。
+- **アンインストール(既定状態)**:
+  ```bash
+  cargo build --release
+  ```
+  (featureフラグを付けない、既定)。この場合`rust-bert`/`tch`は
+  ビルドに一切含まれず、バイナリサイズ・依存グラフへの影響はゼロ。
+  `POST /v1/translate`自体は404にはならず、GPT-2流用の簡易実装へ
+  自動フォールバックする(`disclosure`フィールドに実用に耐えない旨と
+  プラグインの入れ方を明記して返す)。
+- **正直な開示**: これは実行時に着脱できる真の意味での「プラグイン」
+  (動的ライブラリロード等)ではなく、**ビルド時にCargo featureで
+  組み込むか組み込まないかを選ぶ**という意味でのプラグイン方式。
+  `rust-bert`は`tch`(libtorch)への依存が必須で、このエコシステムが
+  他の全モデル(GPT-2・BERT・Whisper相当)で貫いてきた「手作りRust実装
+  +safetensors直接ロード、重量級MLフレームワーク非依存」という方針
+  からは意図的に外れる——この妥協は`nllb-translate` feature配下に
+  隔離することで、必要な人だけが依存の増加を受け入れる設計にした。
+  起動時ログ(`translation plugin: ENABLED`/`not installed`)で現在の
+  状態を確認できる。
+
+## 音声認識(`POST /v1/transcribe`、whisper.cpp CLI、2026-08-29追加)
+
+`open-english`の音声認識は、ブラウザの Web Speech API 頼みで精度が
+低かった。ブラウザ内 Whisper(transformers.js、P2-α)を追加したが、
+端末の GPU/NPU/CPU 性能に大きく左右され、large 級モデルはブラウザには
+重すぎる。P2-β として、**利用者が自分の PC で起動している aruaru-llm に
+whisper.cpp でより大きな Whisper モデルの書き起こしを任せる**経路を
+`POST /v1/transcribe` として用意する(正本:
+`open-english/docs/SPEECH_RECOGNITION_REDESIGN.md` P2-β)。
+
+**実装方式(2026-08-29 方針変更)**: 当初は `whisper-rs`(whisper.cpp の
+Rust バインディング)を直接リンクする設計だったが、`whisper-rs-sys` は
+**Windows(MSVC)で bindgen が破綻する既知ブロッカー**があり
+(`whisper-rs 0.16.0` でも `WHISPER_DONT_GENERATE_BINDINGS=1` でも解消
+しない、issue 2026-04-21)、open-english の主対象が Windows なので不成立。
+代わりに **whisper.cpp の公式リリース同梱プレビルド CLI(`whisper-cli` /
+旧 `main`)を子プロセス起動**する(`pg_dump` / `Expand-Archive` / `adb` を
+子プロセスで呼ぶのと同じパターン。C++ リンク・bindgen を完全回避、GPU
+バックエンドはプレビルド CLI 側で選ばれたものがそのまま使われる)。
+**Cargo feature は不要**——コンパイル時依存が無いため、既定ビルドに
+そのまま含まれる。
+
+- **有効化**: 2 つのファイルを置くだけ(ビルド不要)。
+  1. whisper.cpp の[プレビルド `whisper-cli`](https://github.com/ggml-org/whisper.cpp/releases)を
+     `<crate>/models/whisper/whisper-cli`(Windows は `whisper-cli.exe`)へ、
+     または `ARUARU_LLM_WHISPER_CLI` でパス指定。
+  2. GGML モデル(`ggml-base.bin` は軽量・そこそこ、`ggml-large-v3-turbo` が
+     最高品質。いずれも非同梱)を `<crate>/models/whisper/ggml-base.bin` へ、
+     または `ARUARU_LLM_WHISPER_MODEL` でパス指定。
+- **未配置時**: `POST /v1/transcribe` は `503` + 入手先を案内するエラー。
+- **状態確認**: `GET /v1/runtime` の `whisper` フィールド
+  (`available` / `backend` / `cli_path` / `cli_present` / `model_path` /
+  `model_present` / `detail`)。
+- **調整**: `ARUARU_LLM_WHISPER_TIMEOUT_SECS`(既定 300)で子プロセスの
+  壁時計上限。
+- **正直な開示・検証状況**: `cargo build --release` 成功、
+  `cargo test --release` **100 件全 green**(新規 `transcribe` テスト 7 件
+  = WAV RIFF ヘッダ生成・whisper-cli JSON パース・CLI/モデル不在時の
+  エラー・env 上書き)。**実 `whisper-cli` + 実 GGML モデルでの書き起こし
+  E2E は、この開発環境に両方が無いため未検証**——次周、プレビルド CLI と
+  `ggml-base.bin` を用意して `POST /v1/transcribe` を実 HTTP で検証する。
+
+## 「分身の術」構成
+
+`open-web-server`と同じ設計思想で、1インスタンスを複数ドメインが共有する
+(ドメインごとの個別インストール不要)。管理は[open-easy-web](https://github.com/aon-co-jp/open-easy-web)
+側から行う想定(統合は未着手)。詳細は[CLAUDE.md](CLAUDE.md)を参照。
+
+## 技術スタック
+
+Rust + [RPoem](https://github.com/aon-co-jp/RPoem)(`open-runo-poem-compat`、
+本家[Poem](https://github.com/poem-web/poem)クレートには依存せず、
+Poem互換のAPI形状をtokio/hyper直接実装で提供するファサード、
+2026-07-31移行) + [open-cuda](https://github.com/aon-co-jp/open-cuda)。
+DB非依存・1バイナリ完結。RustはもちろんPython等どの言語からでも
+HTTP経由で利用できる(`opencuda-bert`/`opencuda-llm`/`opencuda-whisper`
+というPython製AIライブラリ〈Transformers/vLLM/Whisper〉のRust移植を、
+このサービスがHTTPサーバーとして公開する窓口)。
+
+詳細な設計思想は [CLAUDE.md](CLAUDE.md) を、他プロジェクトへの移植手順は
+[PORTING.md](PORTING.md) を参照してください。
+
+## インストール
+
+2026-07-23、`install.sh`(Linux、systemdサービス登録)・`install.ps1`
+(Windows、サービス登録案内)・`.github/workflows/release.yml`(タグ
+push時にLinux x86_64・Windows x86_64向けバイナリを自動ビルドし
+[GitHub Releases](https://github.com/aon-co-jp/aruaru-llm/releases)へ
+添付)の3点セットを追加した。**正直な開示**: 起動には470MB超の
+`multilingual-e5-small`モデル重み(Hugging Face配布、MIT)を別途
+取得する必要がある(ライセンス上の理由でインストーラーに同梱していない、
+`install.sh`/`install.ps1`にダウンロード手順を記載)。ビルドは
+`../open-cuda`へのsibling path依存があるため、ソースからビルドする
+場合は`open-cuda`を隣接ディレクトリへcloneしておくこと(CIでは
+`release.yml`が自動でclone)。**2026-07-25追記**: `/v1/generate`
+(GPT-2 124M生成)を使うには、さらに`../open-cuda/crates/opencuda-llm/models/gpt2/`
+配下に`config.json`/`model.safetensors`(548MB)/`tokenizer.json`
+(`openai-community/gpt2`、Hugging Face)が必要(`ARUARU_LLM_GPT2_DIR`
+環境変数でパス変更可)。無い場合`/v1/generate`のみ503を返すが、
+`/v1/chat`等の既存機能は引き続き正常動作する(可用性優先の設計、
+`bow_fallback`と同じ思想)。
+
+```
+curl -fsSL https://github.com/aon-co-jp/aruaru-llm/releases/latest/download/aruaru-llm-linux-x86_64.tar.gz | tar xz
+sudo ./install.sh
+```
+
+## 関連プロジェクト
+
+- [open-cuda](https://github.com/aon-co-jp/open-cuda) — GPUランタイム(SET構成の相方)
+- [e-gov.info](https://github.com/aon-co-jp/e-gov) — 最初の呼び出し元想定
+- [open-raid-z](https://github.com/aon-co-jp/open-raid-z) — 開発ルールの正本
+
+## 2026-09-21の追加 / Added on 2026-09-21
+
+- `POST /v1/chat-providers/complete-priority`に`providers`(例: `["gemini","groq"]`、最大3個)を追加。指定したAIを同時に使い、使えないものは残りから予備を繰り上げる。空なら既定(優先順の上位2社)。 / New `providers` (max 3) selects which free AIs to combine; unavailable ones are replaced by standby providers.
+- `GET /v1/chat-providers/active`に`available`(キー設定済みの選択可能なAI一覧)を追加。 / `available` lists the configured, selectable AIs.
+- `GET /v1/accelerators`(新設): CPU論理コア数・OS/アーキテクチャ・GPU/NPU/USB接続Androidの検出結果。 / New: CPU cores, OS/arch, GPU/NPU/USB-Android detection.
+- `GET /v1/runtime`の`cpu_simd`に、open-cpuの全自動インベントリ(`arch`/`detected_features`/`not_detected_features`/`cores`)を追加。 / `cpu_simd` now includes the open-cpu inventory.
+
+## HANDOFF追記(2026-09-22、本日後半のまとめ・多言語) / HANDOFF addendum (2026-09-22, later today, multilingual)
+
+**日本語**: 本日追加した機能: (1) 管理者専用のAI優先順位番号付け(#1-3)、(2) 四つの9パズルの自動採点(演算子・括弧の全角半角/日本語表記ゆれを正規化、括弧忘れのみ半分正解、÷9丸ごと忘れは不正解)、
+(3) 自分のAPIキー設定時はWEB版共有AIと併用しない(自分の鍵を優先・排他利用)、(4) タイ語・ベトナム語・フィリピン語・ミャンマー語・クルド語・トルコ語・ロマンシュ語を学習言語に追加(文化・敬語の豆知識つき)、
+(5) 学びたい言語・応答言語・レベルの保存(PC/スマホ/タブレット共通)、(6) 話題ガイドにGoogle画像検索リンク追加、(7) 文字入力/音声入力/翻訳/AI自身の知識に自信が無い時のGoogle検索自動裏取り(3つの理由を利用者へ開示)、
+(8) 3〜4ヶ国語同時ハイブリッド表示(hybrid3/hybrid4)、(9) 「今日のニュースは?」が公開WEB版で常に失敗していた不具合修正(`/v1/public/news/for?country=...`、質問言語で国を判定)、
+(10) ニュースダイジェストの国別DATABASE化(TTL3時間、`data/news_by_country.json`)+日付記録(検索日時・記事取得日時、`retrieved_at_unix`)、(11) 8日以上前のニュースを生きているDBから追い出しMarkdownへアーカイブする仕組み
+(`prune_and_archive_stale_news`、GitHubへの実際のpushは今回未実装——常時稼働プロセスへ書き込み資格情報を持たせないための意図的な判断、実際のpushは今後Claude Code経由で手動実施)、
+(12) 「もっと簡単に」「難しい」発言でレベルを自動的に1段下げる機能+ネイティブ表現アドバイスの指示、(13) 「最新の情報が欲しい」ニュアンス検出でGoogle検索・GitHub調査を自動的に有効化。
+**未着手**: 実際のGitHubアーカイブpush、GitHub Actionsやスケジュールタスクとしての定期実行の自動化(`news_prune_archive`エンドポイントは実装済みだが、呼び出しの自動化・cron化は未着手)。
+
+**English**: Features added today: (1) admin-only AI priority numbering (#1-3), (2) automatic grading for the four-nines puzzle, (3) own API key now excludes the shared web AI (exclusive use), (4) added Thai/Vietnamese/Filipino/Burmese/Kurdish/Turkish/Romansh as learn languages (with cultural tips),
+(5) persisted learn-target/reply-lang/level across PC/phone/tablet, (6) Google Images links in topic guides, (7) automatic Google-search grounding when text/voice/translation/AI-knowledge confidence is low (with a visible reason), (8) 3/4-language simultaneous hybrid mode,
+(9) fixed "today's news" always failing on the public web version, now picks the country from the question's language, (10) per-country news digest database (3h TTL) with retrieval timestamps on each item, (11) archiving of news older than 8 days out of the live DB into a local Markdown file
+(actual GitHub push not yet automated — deliberately not giving the always-running server process write credentials; the real push will be done manually via Claude Code), (12) auto level step-down on "too difficult/simpler please", (13) auto-enabling Google/GitHub search on "latest info" phrasing.
+**Not done yet**: actually pushing the archive to GitHub, and scheduling/cron automation for `news_prune_archive`.
+
+## HANDOFF追記(2026-09-22、多言語版) / Multilingual handoff addendum
+
+**简体中文**: 今天新增的功能:(1)管理员专用的AI优先级编号(#1-3),(2)"四个9"数学谜题自动评分(标准化全角/半角运算符及日语表达,只忘记括号记为半对,完全忘记÷9记为错误),
+(3)设置自己的API密钥后不再与网页版共享AI并用(优先且排他使用自己的密钥),(4)新增泰语、越南语、菲律宾语、缅甸语、库尔德语、土耳其语、罗曼什语作为学习语言(附文化及敬语小知识),
+(5)学习语言/回复语言/等级设置可跨PC、手机、平板保存,(6)话题指南中新增Google图片搜索链接,(7)当文字输入/语音输入/翻译/AI自身知识置信度低时自动通过Google搜索核实(并向用户说明三种触发原因),
+(8)支持3~4种语言同时混合显示(hybrid3/hybrid4),(9)修复了公开网页版"今天的新闻"功能一直失败的问题(新增`/v1/public/news/for?country=...`,根据提问语言判断国家),
+(10)按国家分类的新闻摘要数据库(TTL 3小时,`data/news_by_country.json`)并记录检索/发布日期(`retrieved_at_unix`),(11)将8天以上的旧新闻从活跃数据库中清除并归档为Markdown文件
+(实际推送到GitHub的部分本次尚未实现——刻意不给常驻运行的服务器进程赋予GitHub写入权限,实际推送将来通过Claude Code手动完成),
+(12)当用户说"简单一点"或"太难了"时自动降低一级难度,并附带母语者表达建议,(13)检测到"想要最新信息"的语气时自动启用Google搜索与GitHub调查。
+**尚未完成**: 实际推送新闻归档到GitHub、以及`news_prune_archive`的定时/自动化执行。
+
+**繁體中文**: 今天新增的功能:(1)管理員專用的AI優先順序編號(#1-3),(2)「四個9」數學謎題自動評分(標準化全形/半形運算子及日語表達,只忘記括號記為半對,完全忘記÷9記為錯誤),
+(3)設定自己的API金鑰後不再與網頁版共用AI並用(優先且排他使用自己的金鑰),(4)新增泰語、越南語、菲律賓語、緬甸語、庫德語、土耳其語、羅曼什語作為學習語言(附文化及敬語小知識),
+(5)學習語言/回覆語言/等級設定可跨PC、手機、平板保存,(6)話題指南中新增Google圖片搜尋連結,(7)當文字輸入/語音輸入/翻譯/AI自身知識信心度低時自動透過Google搜尋核實(並向使用者說明三種觸發原因),
+(8)支援3~4種語言同時混合顯示(hybrid3/hybrid4),(9)修復了公開網頁版「今天的新聞」功能一直失敗的問題(新增`/v1/public/news/for?country=...`,依提問語言判斷國家),
+(10)依國家分類的新聞摘要資料庫(TTL 3小時,`data/news_by_country.json`)並記錄檢索/發布日期(`retrieved_at_unix`),(11)將8天以上的舊新聞從活躍資料庫中清除並歸檔為Markdown檔案
+(實際推送到GitHub的部分本次尚未實作——刻意不給常駐運行的伺服器行程賦予GitHub寫入權限,實際推送將來透過Claude Code手動完成),
+(12)當使用者說「簡單一點」或「太難了」時自動降低一級難度,並附帶母語者表達建議,(13)偵測到「想要最新資訊」的語氣時自動啟用Google搜尋與GitHub調查。
+**尚未完成**: 實際推送新聞歸檔到GitHub、以及`news_prune_archive`的排程/自動化執行。
+
+**Français**: Fonctionnalités ajoutées aujourd'hui : (1) numérotation de priorité IA réservée aux admins (#1-3), (2) notation automatique du puzzle des « quatre 9 » (normalisation des opérateurs pleine/demi-chasse et des expressions japonaises ; oubli des parenthèses seul = à moitié correct, oubli complet de ÷9 = incorrect),
+(3) l'utilisation de sa propre clé API exclut désormais l'IA partagée du site web (usage exclusif de sa propre clé), (4) ajout du thaï, vietnamien, philippin, birman, kurde, turc et romanche comme langues d'apprentissage (avec notes culturelles),
+(5) persistance des préférences (langue cible, langue de réponse, niveau) sur PC/mobile/tablette, (6) liens de recherche d'images Google dans les guides thématiques, (7) recherche Google automatique lorsque la confiance dans la saisie texte/vocale/traduction/connaissance de l'IA est faible (raison affichée à l'utilisateur),
+(8) mode hybride 3/4 langues simultané (hybrid3/hybrid4), (9) correction du bug où « les nouvelles du jour » échouaient toujours sur le site public (nouvelle route `/v1/public/news/for?country=...`, pays déterminé par la langue de la question),
+(10) base de données d'actualités par pays (TTL 3h, `data/news_by_country.json`) avec horodatage de récupération (`retrieved_at_unix`), (11) archivage des actualités de plus de 8 jours vers un fichier Markdown local
+(le push GitHub réel n'est pas encore automatisé — décision délibérée de ne pas donner d'identifiants d'écriture GitHub au processus serveur permanent ; le push sera fait manuellement via Claude Code), (12) rétrogradation automatique du niveau sur demande explicite (« plus simple », « trop difficile ») avec conseils de formulation naturelle,
+(13) activation automatique de la recherche Google/GitHub sur détection d'une intention « informations les plus récentes ».
+**Non terminé** : push réel de l'archive vers GitHub, automatisation planifiée de `news_prune_archive`.
+
+**Deutsch**: Heute hinzugefügte Funktionen: (1) nur für Admins sichtbare KI-Prioritätsnummerierung (#1-3), (2) automatische Bewertung des „Vier-Neunen"-Rätsels (Normalisierung von Voll-/Halbbreiten-Operatoren und japanischen Ausdrücken; nur vergessene Klammern = halb richtig, komplett vergessenes ÷9 = falsch),
+(3) eigener API-Schlüssel schließt die gemeinsame Web-KI nun aus (exklusive Nutzung des eigenen Schlüssels), (4) Thailändisch, Vietnamesisch, Filipino, Birmanisch, Kurdisch, Türkisch und Rätoromanisch als Lernsprachen hinzugefügt (mit kulturellen Hinweisen),
+(5) Speicherung von Zielsprache/Antwortsprache/Niveau geräteübergreifend (PC/Handy/Tablet), (6) Google-Bildersuche-Links in Themenführern, (7) automatische Google-Suchabsicherung bei geringer Konfidenz bei Text-/Spracheingabe/Übersetzung/KI-Wissen (Grund wird dem Nutzer angezeigt),
+(8) gleichzeitiger 3/4-Sprachen-Hybridmodus (hybrid3/hybrid4), (9) Fehlerbehebung: „heutige Nachrichten" funktionierten auf der öffentlichen Website nie (neue Route `/v1/public/news/for?country=...`, Land wird anhand der Fragesprache bestimmt),
+(10) länderspezifische Nachrichten-Datenbank (TTL 3h, `data/news_by_country.json`) mit Abrufzeitstempel (`retrieved_at_unix`), (11) Archivierung von Nachrichten älter als 8 Tage aus der Live-DB in eine lokale Markdown-Datei
+(tatsächlicher GitHub-Push noch nicht automatisiert — bewusste Entscheidung, dem dauerhaft laufenden Serverprozess keine GitHub-Schreibrechte zu geben; der eigentliche Push erfolgt später manuell über Claude Code), (12) automatische Niveau-Herabstufung bei „einfacher bitte"/„zu schwer" mit Hinweisen zu natürlicher Ausdrucksweise,
+(13) automatische Aktivierung der Google-/GitHub-Suche bei erkannter „aktuellste Informationen"-Absicht.
+**Noch nicht erledigt**: tatsächlicher Push des Archivs zu GitHub, geplante/automatisierte Ausführung von `news_prune_archive`.
+
+**ภาษาไทย**: ฟีเจอร์ที่เพิ่มวันนี้: (1) การจัดลำดับความสำคัญ AI แบบใส่หมายเลข (#1-3) สำหรับผู้ดูแลระบบเท่านั้น (2) การให้คะแนนอัตโนมัติสำหรับปริศนา "เลข 9 สี่ตัว" (ปรับเครื่องหมายเต็ม/ครึ่งความกว้างและคำภาษาญี่ปุ่นให้เท่ากัน ลืมเฉพาะวงเล็บ = ถูกครึ่งหนึ่ง ลืม ÷9 ทั้งหมด = ผิด)
+(3) เมื่อตั้งค่าคีย์ API ของตนเองแล้ว จะไม่ใช้ AI ที่แชร์บนเว็บร่วมด้วย (ใช้คีย์ของตนเองแบบเอกสิทธิ์) (4) เพิ่มภาษาไทย เวียดนาม ฟิลิปปินส์ พม่า เคิร์ด ตุรกี และโรมันช์ เป็นภาษาที่เรียนได้ (พร้อมข้อมูลวัฒนธรรม)
+(5) บันทึกการตั้งค่าภาษาที่เรียน/ภาษาตอบกลับ/ระดับ ข้ามอุปกรณ์ PC/มือถือ/แท็บเล็ต (6) ลิงก์ค้นหารูปภาพ Google ในคู่มือหัวข้อ (7) เปิดใช้การค้นหา Google อัตโนมัติเมื่อความมั่นใจในการพิมพ์/เสียง/การแปล/ความรู้ของ AI ต่ำ (แสดงเหตุผลให้ผู้ใช้เห็น)
+(8) โหมดผสมหลายภาษาพร้อมกัน 3-4 ภาษา (hybrid3/hybrid4) (9) แก้ไขบั๊กที่ฟีเจอร์ "ข่าววันนี้" ใช้งานไม่ได้เลยบนเว็บสาธารณะ (เพิ่มเส้นทาง `/v1/public/news/for?country=...` เลือกประเทศตามภาษาของคำถาม)
+(10) ฐานข้อมูลข่าวสรุปรายประเทศ (TTL 3 ชั่วโมง `data/news_by_country.json`) พร้อมบันทึกเวลาดึงข้อมูล (`retrieved_at_unix`) (11) เก็บถาวรข่าวที่เก่ากว่า 8 วันออกจากฐานข้อมูลไปเป็นไฟล์ Markdown
+(ยังไม่ได้ทำการ push ไปยัง GitHub จริง — เป็นการตัดสินใจโดยเจตนาที่จะไม่ให้สิทธิ์เขียน GitHub แก่โพรเซสเซิร์ฟเวอร์ที่ทำงานตลอดเวลา การ push จริงจะทำผ่าน Claude Code ในภายหลัง) (12) ลดระดับความยากอัตโนมัติเมื่อผู้ใช้พูดว่า "ง่ายกว่านี้" หรือ "ยากเกินไป" พร้อมคำแนะนำสำนวนแบบเจ้าของภาษา
+(13) เปิดใช้การค้นหา Google/GitHub อัตโนมัติเมื่อตรวจพบความต้องการ "ข้อมูลล่าสุด"
+**ยังไม่เสร็จ**: การ push คลังข่าวจริงไปยัง GitHub และระบบอัตโนมัติ/ตั้งเวลาสำหรับ `news_prune_archive`
+
+## v1.3.0(2026-10-10): かすれ補正・字形照合・AI文脈補完の拡張 / v1.3.0: faded-text rescue, glyph matching, extended AI context completion
+
+### 日本語
+- OCR の補完・字形照合の API を追加: `POST /v1/ocr/scan` / `propose` / `fill`(`return_all` / `use_web` / `lm_candidates`)/ `glyph-rank`、`GET /v1/ocr/charset?n=`。いずれも言語モデル(`/v1/qwen/install` → `/v1/qwen/select`)が必要(無いとき 503。`glyph-rank` は `extra_chars` だけでも動く)。
+- 実装: `src/ocr_fill.rs`(走査・提案・採点・検索・連続 1〜4 文字。採点は最大 8 候補・後ろ文脈 8 文字)、`src/ocr_glyph.rs`(字形の照合 = `opencuda_blas::sgemm`、共有クレート `RPoem/open-runo-glyph`)、`src/qwen_generation.rs`(`score_texts` / `top_next_texts` / `scan_text` / `common_chars`)、`src/web_search.rs`(`snippets_via_aruaru_search`)。
+- 検索: `ARUARU_LLM_SEARCH_URL`(既定 `http://127.0.0.1:4610` = `aruaru-search`)。試験は `cargo test --bin aruaru-llm ocr_`(20 件)、速度は `cargo test --release --bin aruaru-llm bench_sgemm -- --ignored --nocapture`(字形 1 升 約 14 ms)。
+- 測定: 補完はこれまでの試験で「害はないが上積みも無く遅い」(1 か所 10〜20 秒、Qwen2.5-1.5B・CPU)。既定オフ・実験的。詳細は `pdf-r2l-rs/PORTING.md`。
+- **VPS 本番**: `/v1/ocr`・`/v1/ocr/fill` は反映済み。v1.3.0 の追加分(`/scan`・`/propose`・`/glyph-rank`・`/charset`)も 2026-10-10 に反映(Qwen 未導入のため補完系は 503 が正常。VPS は 4 コア・RAM 3.6GB)。バックアップ: `/root/aruaru-llm.bin.bak-20261010`。トークンは `/root/aruaru-llm/.env.ocr`(git 管理外)。
+
+### English
+- Added OCR completion / glyph-matching APIs: `POST /v1/ocr/scan` / `propose` / `fill` (`return_all` / `use_web` / `lm_candidates`) / `glyph-rank`, `GET /v1/ocr/charset?n=`. All need a language model (`/v1/qwen/install` then `/v1/qwen/select`; 503 without one — `glyph-rank` works with just `extra_chars`).
+- Code: `src/ocr_fill.rs` (scan / propose / score / search / 1–4 character spans; scoring uses at most 8 candidates and 8 characters of following context), `src/ocr_glyph.rs` (glyph matching = `opencuda_blas::sgemm`, shared crate `RPoem/open-runo-glyph`), `src/qwen_generation.rs` (`score_texts` / `top_next_texts` / `scan_text` / `common_chars`), `src/web_search.rs` (`snippets_via_aruaru_search`).
+- Search: `ARUARU_LLM_SEARCH_URL` (default `http://127.0.0.1:4610` = `aruaru-search`). Tests: `cargo test --bin aruaru-llm ocr_` (20 tests); speed: `cargo test --release --bin aruaru-llm bench_sgemm -- --ignored --nocapture` (~14 ms per glyph cell).
+- Measurements: in our tests completion does no harm but adds nothing and is slow (10–20 s per spot, Qwen2.5-1.5B on CPU). Off by default, experimental. See `pdf-r2l-rs/PORTING.md`.
+- **Production VPS**: `/v1/ocr` and `/v1/ocr/fill` were deployed earlier; the v1.3.0 additions (`/scan`, `/propose`, `/glyph-rank`, `/charset`) were deployed on 2026-10-10 (503 is expected without a model; the VPS has 4 cores / 3.6 GB RAM). Backup: `/root/aruaru-llm.bin.bak-20261010`. The token is in `/root/aruaru-llm/.env.ocr` (not in git).
+
+## お引越し(VPS・PCの作り直し) / Migration (rebuilding a VPS or PC)
+
+**日本語**: aruaru-llmの「賢くなる部分」(接客方針・国別の話題・訂正済み知識)は、モデルとは別の平文ファイル(`data/knowledge/knowledge.json`)に保存され、6時間ごとにGitHub(`aon-co-jp/open-english`の`data/knowledge/knowledge.json`)へ自動退避されます。新しいVPS/PCでaruaru-llmを起動すると、公開WEB→GitHubの順に自動で取り込んで復元します(手動の操作は不要)。VPSの手順は[`PORTING.md`](PORTING.md)「お引越し」節。モデルを入れ替えても知識は消えません。
+
+**English**: What aruaru-llm "learns" (hospitality guidance, per-country topics, corrected facts) is stored as plain text, separate from the model (`data/knowledge/knowledge.json`), and backed up to GitHub every 6 hours (`data/knowledge/knowledge.json` in `aon-co-jp/open-english`). A freshly started aruaru-llm on a new VPS/PC restores it automatically (public web first, then GitHub) — no manual step. VPS steps: see "Migration" in [`PORTING.md`](PORTING.md). Swapping the LLM never touches this data.
+
+## 知識の日本語検索の強化・AI学習コメントの学習とGitHub自動バックアップ(2026-10-08)
+- **日本語検索**: `knowledge.rs`の`words()`が、連続するCJK文字を2文字ずつの断片(バイグラム)で比べるようにした(英数字の語は従来どおり)。以前は日本語の文が1語に潰れ、ほぼ拾えなかった。テスト3件合格(`cargo test knowledge::`)。
+- **学習**: `audiocafe.tokyo`のPHPが`POST /v1/knowledge/add`で、検証済みの価格・AIの誤りの訂正・「料金は推測で書かない」ルールを教える。AIが書いた価格欄は24件中23件が実価格と不一致だったため。
+- **GitHub自動バックアップ**: `knowledge-sync-push`(6時間ごと+PHPクロール直後)が`open-english/data/knowledge/knowledge.json`へ保存。起動時に`sync_from_remote`で復元。空のストアでの復元テスト合格(19件を18秒)。
+- **お引越し**: 知識はGitHubから自動復元される。復元されないのは`.env.providers`等のAPIキーだけ(手動で再配置)。systemdの実物は`audiocafe-tokyo`の`deploy/vps/`。
+- 注意: 知識は公開リポジトリに保存されるため、公開してよい内容だけを入れる。
+
+## JSON処理の使用方針: `parse_secure_sonic`(速い型+安全)と`sonic-rs`は使える所では全て使う(2026-10-14、ユーザー指示)
+正本は[`RS-JSON`](https://github.com/aon-co-jp/RS-JSON)(`README.md`・`PORTING.md`)。
+
+**方針**: JSONを読む所は、使える所では**全て** `rust-json`(RS-JSON)の `parse_secure_sonic`(`fast`機能、結果は`sonic_rs::Value`)を使う。
+`sonic-rs` を直接使える所(型付き構造体への読み込みなど)も同様。使えない所は `parse_secure`(結果は`serde_json::Value`)を使う。
+外部から来る信頼できない入力(HTTP本文・ネットワーク越しのファイル・アップロード)は、**必ずサイズ・深さ・重複キーの上限つき**で読む。
+
+**実測(7 MB・4万件)**: `serde_json` 200 ms / `parse_secure` 217 ms / **`parse_secure_sonic` 83 ms(約2.4倍速い、防御込み)** / `sonic-rs`そのまま 33 ms(約6倍、防御なし)。
+`serde_json::Value`に読む限りSIMDでもほぼ速くならない(188 ms)。**速さの源は、結果を連続した領域に詰め込む値の型**。
+
+**使える所 / 使えない所**
+- ✅ 読み取り中心で、JSONを大きく・頻繁に読む所(キャッシュJSON、設定、APIの応答、ログ、インデックス)。
+- ✅ 外部からの入力の入口(速さより防御が目的。`parse_secure`でも可)。
+- ⚠️ `serde_json::Value`を関数間で受け渡している既存コードは、型を`sonic_rs::Value`に直す書き換えが要る(`JsonValueTrait`/`JsonContainerTrait`のメソッド)。書き換えずに`serde_json::Value`へ読むと速くならない。
+- ❌ WASM(`rust_json::light`、依存ゼロ)、PHP/JavaScript側のJSON処理(Rustの部品は使えない)。
+- 注意: 依存先の`sonic-rs`は内部で`unsafe`を使う(自前コードに`unsafe`は無い)。小さなJSON(数KB)では体感差が出ない。速度目的の書き換えは、実測で効く所から。
+
+**導入**: `Cargo.toml`に `rust-json = { path = "../RS-JSON", features = ["fast"] }`。使用例は`RS-JSON/README.md`。
+
+**このリポジトリでの適用状況**: `knowledge::sync_from_remote`(外部取り込み)は`parse_secure`に適用済み。ほかは未適用(方針のみ)。次の対象: 検索インデックス・ロード時のJSON。
+
+---
+
+作者 / Author: 石 塚 正 浩（MASAHIRO ISHIZUKA） (https://github.com/aon-co-jp)
+
+## API 方針: REST 全廃・gRPC / Connect へ (2026-11-04)
+
+### 日本語
+- **REST は全廃する。新しい API は REST で作らない。** ブラウザや `curl` から呼ぶ API は **Connect の単純呼び出し**(`POST /<パッケージ>.<Service>/<Method>`、`content-type: application/json`、本文は JSON)、サービス間は **gRPC / gRPC-web**(RPoem の管理API `open_runo.admin.v1.Admin` と同じ流儀)。ストリーミングは、必要になってから。
+- **既存の REST は、触るときに順に移す。** 移したら旧 REST の経路は消す。移行が終わるまで残るが、**新規には追加しない**。
+- **JSON は RS-JSON に統一**する(読み込みは `from_str_secure` / `parse_secure` でサイズ・深さ・重複キーの上限つき、書き出しは `rust_json::fast`)。ブラウザの WASM に `prost` は入れない(サイズが増えるため)。
+- **例外(自分たちの API ではなく、相手の規格が決めているもの)**: ACME、OAuth/OIDC のコールバック、第三者(GitHub など)からの Webhook、ヘルスチェック、静的ファイル配信、OTLP など。これらは規格どおりの HTTP を受ける。
+- 参考実装: `RPoem`(`open_runo.admin.v1.Admin`)、`open-easy-web`(`server/src/connect.rs`、`proto/open_easy_web/admin/v1/admin.proto`)。
+- ※ このリポジトリのコードが既に方針どおりかどうかは、各リポジトリの現状による。この節は方針の記録であり、コードの変更を意味しない。
+
+### English
+- **REST is being abolished. New APIs are not built as REST.** APIs called from browsers or `curl` use **Connect unary calls** (`POST /<package>.<Service>/<Method>`, `content-type: application/json`, JSON body); service-to-service calls use **gRPC / gRPC-web** (the same style as RPoem's admin API `open_runo.admin.v1.Admin`). Streaming only when it is actually needed.
+- **Existing REST endpoints are migrated one by one, when they are touched.** The old REST route is removed once migrated. Until migration is finished they remain, but **no new ones are added**.
+- **JSON is unified on RS-JSON**: reading with `from_str_secure` / `parse_secure` (size, depth and duplicate-key limits), writing with `rust_json::fast`. `prost` is not put into browser WASM (it would grow the binary).
+- **Exceptions (shapes dictated by someone else's standard, not our own API)**: ACME, OAuth/OIDC callbacks, webhooks from third parties (e.g. GitHub), health checks, static file serving, OTLP, and so on. These accept plain HTTP as the standard requires.
+- Reference implementations: `RPoem` (`open_runo.admin.v1.Admin`) and `open-easy-web` (`server/src/connect.rs`, `proto/open_easy_web/admin/v1/admin.proto`).
+- Note: whether the code in a given repository already follows this policy depends on that repository. This section records the policy; it does not mean the code has been changed.
+
+### Deutsch (KI-Übersetzung, redaktionell überarbeitet; noch nicht von Muttersprachlern geprüft)
+- **REST wird vollständig abgeschafft; neue APIs entstehen nicht mehr als REST.** APIs, die aus dem Browser oder per `curl` aufgerufen werden, verwenden **unäre Connect-Aufrufe** (`POST /<Paket>.<Service>/<Methode>`, `content-type: application/json`, JSON-Body). Zwischen Diensten kommen **gRPC bzw. gRPC-web** zum Einsatz, im selben Stil wie die Admin-API von RPoem (`open_runo.admin.v1.Admin`). Streaming wird erst ergänzt, wenn es tatsächlich gebraucht wird.
+- **Bestehende REST-Endpunkte werden schrittweise umgestellt, und zwar immer dann, wenn man ohnehin an ihnen arbeitet.** Sobald ein Endpunkt umgestellt ist, wird die alte REST-Route entfernt. Bis zum Abschluss der Migration bleiben die übrigen bestehen, es werden aber **keine neuen mehr hinzugefügt**.
+- **JSON wird einheitlich über RS-JSON verarbeitet**: Gelesen wird mit `from_str_secure` bzw. `parse_secure` (mit Obergrenzen für Größe, Verschachtelungstiefe und doppelte Schlüssel), geschrieben mit `rust_json::fast`. `prost` wird nicht in das Browser-WASM aufgenommen, da es die Datei vergrößern würde.
+- **Ausnahmen (Schnittstellen, deren Form ein fremder Standard vorgibt und die nicht zu unserer eigenen API gehören)**: ACME, OAuth/OIDC-Callbacks, Webhooks von Drittanbietern (z. B. GitHub), Health-Checks, die Auslieferung statischer Dateien, OTLP und Ähnliches. Diese nehmen, wie vom jeweiligen Standard verlangt, gewöhnliches HTTP entgegen.
+- Referenzimplementierungen: `RPoem` (`open_runo.admin.v1.Admin`) und `open-easy-web` (`server/src/connect.rs`, `proto/open_easy_web/admin/v1/admin.proto`).
+- Hinweis: Ob der Code eines einzelnen Repositorys diese Richtlinie bereits erfüllt, hängt vom jeweiligen Repository ab. Dieser Abschnitt dokumentiert lediglich die Richtlinie; er besagt nicht, dass der Code schon angepasst wurde.
+
+### Русский (перевод выполнен с помощью ИИ и отредактирован; носителями языка пока не проверен)
+- **От REST мы полностью отказываемся; новые API больше не создаются в стиле REST.** API, к которым обращаются из браузера или через `curl`, используют **унарные вызовы Connect** (`POST /<пакет>.<Service>/<Method>`, `content-type: application/json`, тело запроса — JSON). Для взаимодействия между сервисами применяются **gRPC и gRPC-web** — в том же стиле, что и административный API RPoem (`open_runo.admin.v1.Admin`). Потоковая передача данных добавляется лишь тогда, когда в ней действительно возникает необходимость.
+- **Существующие REST-эндпоинты переводятся поэтапно — по мере того, как с ними приходится работать.** После перевода старый REST-маршрут удаляется. Пока миграция не завершена, оставшиеся эндпоинты сохраняются, но **новые не добавляются**.
+- **Работа с JSON унифицирована на основе RS-JSON**: чтение — через `from_str_secure` или `parse_secure` (с ограничениями на размер, глубину вложенности и повторяющиеся ключи), запись — через `rust_json::fast`. `prost` в браузерный WASM не включается, поскольку это увеличило бы размер файла.
+- **Исключения (интерфейсы, форму которых определяет чужой стандарт, а не наш собственный API)**: ACME, обратные вызовы OAuth/OIDC, вебхуки сторонних сервисов (например, GitHub), проверки работоспособности, раздача статических файлов, OTLP и тому подобное. Такие интерфейсы принимают обычный HTTP, как того требует соответствующий стандарт.
+- Эталонные реализации: `RPoem` (`open_runo.admin.v1.Admin`) и `open-easy-web` (`server/src/connect.rs`, `proto/open_easy_web/admin/v1/admin.proto`).
+- Примечание: соответствует ли код конкретного репозитория этой политике, зависит от самого репозитория. Данный раздел лишь фиксирует политику и не означает, что код уже изменён.
+
+## API 方針の補足: 用語の整理と使い分け (2026-11-04)
+
+### 日本語
+**1つに統一するものではなく、別の層の話です。** 「REST の代わり」になるのは Connect・gRPC・GraphQL だけで、WASM は画面を作る技術です。
+
+| 用語 | 何か | REST の代わりか |
+|---|---|---|
+| REST | URL と HTTP メソッドで操作を表す API の作り方 | 全廃する側 |
+| **Connect** | `POST /サービス名/メソッド名` に JSON を送る形式。`curl` でもブラウザの `fetch` でも呼べる | はい(**採用**) |
+| **gRPC** | 同じ「サービス/メソッド」の考え方を、バイナリ(protobuf)と HTTP/2 で行う形式。速く、ストリーミングも得意 | はい(**サービス同士に採用**) |
+| gRPC-web | gRPC のブラウザ向けの変形版 | はい(必要なら) |
+| GraphQL | 欲しい項目を問い合わせる形式 | 一部だけ(**問い合わせ(読み取り)専用**) |
+| WASM | Rust をブラウザの中で動かす仕組み | いいえ(画面を作る技術) |
+
+- **ブラウザの画面や `curl` から呼ぶ API は Connect**(POST、JSON を RS-JSON で読み書き)。ブラウザの WASM は素の gRPC を話せず、Connect なら `fetch` のままで、`prost` を足さずに済む(画面のサイズも増えない)。
+- **サービス同士の通信(サーバー間、重い処理、ストリーミング)は gRPC。** 多くは Connect で足りるので、ストリーミングが必要になった所だけ gRPC に上げる。
+- **GraphQL は、まとめて問い合わせたいときの読み取り専用。** 書き込み(操作)には使わない。
+- **WASM は画面を作る技術として、そのまま使う。** 画面から呼ぶ API が Connect になっただけ。
+- 外部の規格が形を決めるもの(ACME、OAuth のコールバック、第三者の Webhook、ヘルスチェック、静的ファイル、OTLP)は、規格どおりの HTTP のまま。
+- **迷ったら Connect。**
+
+### English
+**These are not alternatives to unify; they sit at different layers.** Only Connect, gRPC and GraphQL can replace REST; WASM is a way to build the UI.
+
+| Term | What it is | Replaces REST? |
+|---|---|---|
+| REST | API style that expresses operations through URLs and HTTP methods | The thing being abolished |
+| **Connect** | `POST /Service/Method` with a JSON body; callable from `curl` and from a browser `fetch` | Yes (**adopted**) |
+| **gRPC** | The same service/method idea over binary (protobuf) and HTTP/2; fast, good at streaming | Yes (**for service-to-service**) |
+| gRPC-web | A browser-friendly variant of gRPC | Yes (if needed) |
+| GraphQL | A query language: ask for exactly the fields you want | Partly (**read-only queries**) |
+| WASM | Runs Rust inside the browser | No (a UI technology) |
+
+- **APIs called from browser screens or `curl` use Connect** (POST, JSON read and written with RS-JSON). Browser WASM cannot speak plain gRPC; with Connect it stays a `fetch`, and `prost` is not needed (the binary does not grow).
+- **Service-to-service calls (server to server, heavy work, streaming) use gRPC.** Connect is enough in most places; move a call to gRPC only where streaming is actually needed.
+- **GraphQL is read-only**, for queries that gather several pieces of data. It is not used for writes (operations).
+- **WASM stays as the way to build the UI.** The API it calls simply became Connect.
+- Interfaces whose shape an outside standard dictates (ACME, OAuth callbacks, third-party webhooks, health checks, static files, OTLP) stay plain HTTP.
+- **When in doubt, use Connect.**
+
+### Deutsch (KI-Übersetzung, sprachlich überarbeitet; noch nicht von Muttersprachlern geprüft)
+**Es geht nicht darum, eine einzige Technik auszuwählen – die Begriffe liegen auf unterschiedlichen Ebenen.** Als Ersatz für REST kommen nur Connect, gRPC und GraphQL in Frage; WASM dagegen ist eine Technik, mit der die Benutzeroberfläche gebaut wird.
+
+| Begriff | Was ist das? | Ersatz für REST? |
+|---|---|---|
+| REST | Ein API-Stil, bei dem Operationen über URLs und HTTP-Methoden ausgedrückt werden | wird abgeschafft |
+| **Connect** | `POST /Dienst/Methode` mit JSON im Body; aufrufbar mit `curl` ebenso wie mit `fetch` im Browser | ja (**gewählt**) |
+| **gRPC** | Dasselbe Prinzip aus Dienst und Methode, aber über binäres protobuf und HTTP/2; schnell und gut für Streaming geeignet | ja (**zwischen Diensten**) |
+| gRPC-web | Eine für den Browser angepasste Variante von gRPC | ja (bei Bedarf) |
+| GraphQL | Abfragesprache, mit der man genau die benötigten Felder anfordert | teilweise (**nur für lesende Abfragen**) |
+| WASM | Führt Rust-Code direkt im Browser aus | nein (Technik für die Oberfläche) |
+
+- **APIs, die von Browseroberflächen oder per `curl` aufgerufen werden, verwenden Connect** (POST; JSON wird mit RS-JSON gelesen und geschrieben). WASM im Browser kann kein reines gRPC sprechen. Mit Connect bleibt es bei einem gewöhnlichen `fetch`, und `prost` ist nicht nötig – die WASM-Datei wird dadurch nicht größer.
+- **Für die Kommunikation zwischen Diensten (Server zu Server, rechenintensive Aufgaben, Streaming) wird gRPC eingesetzt.** In den meisten Fällen reicht Connect aus; auf gRPC wird nur dort umgestellt, wo Streaming tatsächlich gebraucht wird.
+- **GraphQL dient ausschließlich lesenden Abfragen**, wenn mehrere Informationen gebündelt abgefragt werden sollen. Für Schreibzugriffe (Operationen) wird es nicht verwendet.
+- **WASM bleibt die Technik für die Oberfläche.** Geändert hat sich lediglich, dass die aufgerufene API nun auf Connect beruht.
+- Schnittstellen, deren Form durch einen externen Standard festgelegt ist (ACME, OAuth-Callbacks, Webhooks von Drittanbietern, Health-Checks, statische Dateien, OTLP), bleiben gewöhnliches HTTP.
+- **Im Zweifel: Connect.**
+
+### Русский (перевод выполнен с помощью ИИ и литературно отредактирован; носителями языка пока не проверен)
+**Это не варианты, из которых нужно выбрать один, а технологии разных уровней.** Заменить REST могут только Connect, gRPC и GraphQL; WASM же — это способ создания пользовательского интерфейса.
+
+| Термин | Что это | Заменяет REST? |
+|---|---|---|
+| REST | Стиль построения API, при котором операции выражаются через URL и HTTP-методы | отменяется |
+| **Connect** | `POST /Сервис/Метод` с телом в формате JSON; вызывается как из `curl`, так и из браузерного `fetch` | да (**выбран**) |
+| **gRPC** | Тот же принцип «сервис — метод», но поверх двоичного формата protobuf и HTTP/2; работает быстро и хорошо подходит для потоковой передачи | да (**для связи между сервисами**) |
+| gRPC-web | Адаптированный для браузера вариант gRPC | да (при необходимости) |
+| GraphQL | Язык запросов: клиент запрашивает ровно те поля, которые ему нужны | частично (**только запросы на чтение**) |
+| WASM | Позволяет выполнять код на Rust прямо в браузере | нет (технология для интерфейса) |
+
+- **API, которые вызываются из браузерных интерфейсов или через `curl`, строятся на Connect** (POST; JSON читается и записывается через RS-JSON). Браузерный WASM не умеет работать с «чистым» gRPC. С Connect достаточно обычного `fetch`, а `prost` не требуется — размер WASM-файла не увеличивается.
+- **Для обмена между сервисами (сервер — сервер, ресурсоёмкие задачи, потоковая передача) применяется gRPC.** В большинстве случаев достаточно Connect; на gRPC переходят только там, где потоковая передача действительно необходима.
+- **GraphQL используется только для чтения**, когда нужно получить сразу несколько связанных данных. Для записи (операций) он не применяется.
+- **WASM по-прежнему остаётся технологией для интерфейса.** Изменилось лишь то, что вызываемый им API теперь построен на Connect.
+- Интерфейсы, форма которых задана внешним стандартом (ACME, обратные вызовы OAuth, вебхуки сторонних сервисов, проверки работоспособности, статические файлы, OTLP), остаются обычным HTTP.
+- **Если есть сомнения — выбирайте Connect.**
+
+## 受付制御 / Admission control
+同時実行上限・サイト別公平キュー・タイムアウトを備える(詳細は`CLAUDE.md`)。Max concurrency, per-site fair queues and timeouts (see `CLAUDE.md`).
+
+## 引き継ぎ・再開 / Hand-off and resume (2026-11-15)
+
+**日本語**: 女性キャラ=メイドの先生(さくら)/男性キャラ=執事の先生(トラ)の応対API(`PersonaPrompt`)と、モデル非依存の知識ストア(`data/knowledge/`、起動時と6時間ごとに公開WEB→GitHubから自動復元、6時間ごとにGitHubへ退避)を実装し、VPSへ反映済み。再開用メッセージは[`PORTING.md`](PORTING.md)末尾。
+**English**: The maid/butler teacher persona API (`PersonaPrompt`) and a model-independent knowledge store (`data/knowledge/`, auto-restored from the public web then GitHub at start-up and every 6 h, backed up to GitHub every 6 h) are implemented and deployed to the VPS. The resume message is at the end of [`PORTING.md`](PORTING.md).
+
+**日本語(2026-11-15追記)**: v0.2.5を公開(Connect版、リリースCIにglslc導入)。再開手順は[`PORTING.md`](PORTING.md)末尾。
+**English (2026-11-15 addendum)**: v0.2.5 published (Connect build; glslc added to release CI). Resume steps: end of [`PORTING.md`](PORTING.md).
+
+## 再開 / Resume
+再開用メッセージは`CLAUDE.md`末尾「2026-11-15 再開用メッセージ」(日英)。The resume message (JA/EN) is at the end of `CLAUDE.md`.
+
+## 2026-11-18 OCRフォント配信のConnect化 / OCR font delivery moved to Connect
+`GET /v1/ocr/fonts/:name` → `POST /aruaru_llm.v1.Llm/OcrFont`。本番未反映・mainへ未マージ。詳細は`PORTING.md`末尾(日英)。 / Production not updated, not merged to main; see the end of `PORTING.md` (JA/EN).
+
+### 2026-11-18 Generate遅延の原因と対策・本番の状態(日本語)
+- **原因(ローカルWSLで再現)**: CPU経路のprefillは長さのおよそ2.5乗で遅くなる。GPT-2のBPEはバイト単位で、日本語は1文字あたり2〜3トークン。知識・ニュース文脈でプロンプトが長くなり、8トークンの生成に100秒超かかった(文脈を外すと0.6秒)。スレッド競合ではない(`RAYON_NUM_THREADS`を減らしても変わらず)。
+- **対策**: (1)`main`の`4805563`=プロンプト上限64トークン+知識/ニュース文脈の長さ制限、(2)open-cuda `480718f`=小さな行列積・softmaxのrayonオーバーヘッドを避ける直列化。ocr-font-deployの`cd83d8d`(バイト予算のクリップ)は`4805563`と同等のためmainへは取り込まない。
+- **本番VPSのバイナリ**: 2つのセッションが同じ日にバイナリを差し替えた。最終的に`main`系(他セッションのビルド)へ戻し、Generate 8トークン5秒・`OcrFont`200・旧経路404・`Runtime`200・active を実測。私のビルドは`aruaru-llm.mine-ctxclip-20261118`、ほかのバックアップ=`.before-font-` / `.before-ctxclip-` / `.before-fastgen-` / `.before-gemmfix-20261118`。
+- **次回**: `origin/main`からクリーンビルドして差し替え、Generateを再測定する(未実施)。
+
+## あなたの機械に合うAIモデルを選べます(2026-11-19) / Pick an AI model that fits your machine
+
+**日本語**
+- トップ画面の「この機械で動かせるモデル」で、パソコン・タブレット・スマホ・サーバーのメモリに入りそうなAIモデルの一覧が見られます。
+- 「導入」を押すと、モデルをダウンロードして切り替えます。説明は10か国語から選べます。
+- グラフィックボードを替えたり、入れ直したりすると、次の起動で合うモデルを自動で入れます(止めるには環境変数 `ARUARU_LLM_AUTO_MODEL=0`)。初めての起動では、何もダウンロードしません。
+- 「入る」は目安です。いまの文章生成はCPUで動くので、判定にはメモリ(RAM)を使っています。
+- インストーラーの既定の場所は `C:\aon-co-jp\open-easy-web\` です。ドライブとフォルダーは選べます。
+
+**English**
+- On the top page, "Models for this machine" shows the AI models that should fit the memory of your PC, tablet, phone or server.
+- Press "Install" and the model is downloaded and switched on. You can read the explanation in 10 languages.
+- If you change your graphics card or reinstall, a model that fits is installed for you the next time it starts. To turn this off, set `ARUARU_LLM_AUTO_MODEL=0`. The very first start downloads nothing.
+- "Fits" is only a rough guide. Text generation runs on the CPU today, so the check uses your memory (RAM).
+- The installer puts files in `C:\aon-co-jp\open-easy-web\` by default. You can pick another drive and folder.
+
+## 他の言語 / Other languages (2026-11-19)
+
+### 简体中文
+
+- 在首页的“本机可运行的模型”中,可以看到适合你的电脑、平板、手机或服务器内存的 AI 模型列表。
+- 点“安装”就会下载模型并切换过去。说明可选 10 种语言。
+- 更换显卡或重装后,下次启动时会自动安装合适的模型(用环境变量 `ARUARU_LLM_AUTO_MODEL=0` 可关闭)。第一次启动不会下载任何东西。
+- “适合”只是大致参考。目前文本生成在 CPU 上运行,所以判断依据是内存(RAM)。安装程序默认位置是 `C:\aon-co-jp\open-easy-web\`,可自行选择磁盘和文件夹。
+
+### 繁體中文(台灣)
+
+- 在首頁的「本機可執行的模型」中,可以看到適合你的電腦、平板、手機或伺服器記憶體的 AI 模型清單。
+- 按「安裝」就會下載模型並切換過去。說明可選 10 種語言。
+- 更換顯示卡或重新安裝後,下次啟動時會自動安裝合適的模型(用環境變數 `ARUARU_LLM_AUTO_MODEL=0` 可關閉)。第一次啟動不會下載任何東西。
+- 「適合」只是大略的參考。目前文字生成是在 CPU 上執行,所以判斷依據是記憶體(RAM)。安裝程式預設位置是 `C:\aon-co-jp\open-easy-web\`,可自行選擇磁碟與資料夾。
+
+### 한국어
+
+- 첫 화면의 "이 기기에서 돌릴 수 있는 모델"에서 PC, 태블릿, 스마트폰, 서버의 메모리에 들어갈 만한 AI 모델 목록을 볼 수 있습니다.
+- "설치"를 누르면 모델을 내려받아 바로 바꿉니다. 설명은 10개 언어 중에서 고를 수 있습니다.
+- 그래픽 카드를 바꾸거나 다시 설치하면 다음 실행 때 맞는 모델이 자동으로 설치됩니다(끄려면 환경 변수 `ARUARU_LLM_AUTO_MODEL=0`). 처음 실행할 때는 아무것도 내려받지 않습니다.
+- "맞음"은 대략적인 기준입니다. 지금은 문장 생성이 CPU에서 돌아가므로 메모리(RAM)로 판단합니다. 설치 프로그램의 기본 위치는 `C:\aon-co-jp\open-easy-web\`이며, 드라이브와 폴더를 고를 수 있습니다.
+
+### Deutsch
+
+- Auf der Startseite zeigt „Modelle für diesen Rechner“ die KI-Modelle, die voraussichtlich in den Speicher Ihres PCs, Tablets, Smartphones oder Servers passen.
+- Mit „Installieren“ wird das Modell heruntergeladen und gleich umgeschaltet. Die Erklärung gibt es in 10 Sprachen.
+- Wenn Sie die Grafikkarte wechseln oder neu installieren, wird beim nächsten Start automatisch ein passendes Modell installiert (abschaltbar mit `ARUARU_LLM_AUTO_MODEL=0`). Beim allerersten Start wird nichts heruntergeladen.
+- „Passt“ ist nur eine grobe Orientierung. Die Textgenerierung läuft derzeit auf der CPU, deshalb zählt der Arbeitsspeicher (RAM). Der Installer nutzt standardmäßig `C:\aon-co-jp\open-easy-web\`; Laufwerk und Ordner sind wählbar.
+
+### Français
+
+- Sur la page d'accueil, « Modèles pour cette machine » affiche les modèles d'IA qui devraient tenir dans la mémoire de votre PC, tablette, smartphone ou serveur.
+- Appuyez sur « Installer » : le modèle est téléchargé puis activé. L'explication existe en 10 langues.
+- Si vous changez de carte graphique ou réinstallez, un modèle adapté est installé automatiquement au prochain démarrage (désactivable avec `ARUARU_LLM_AUTO_MODEL=0`). Le tout premier démarrage ne télécharge rien.
+- « Convient » n'est qu'une indication approximative. La génération de texte tourne aujourd'hui sur le processeur, donc on se base sur la mémoire (RAM). L'installateur utilise par défaut `C:\aon-co-jp\open-easy-web\` ; vous pouvez choisir un autre lecteur et dossier.
+
+### Español
+
+- En la página principal, «Modelos para esta máquina» muestra los modelos de IA que deberían caber en la memoria de tu PC, tableta, móvil o servidor.
+- Pulsa «Instalar» y el modelo se descarga y se activa. La explicación está en 10 idiomas.
+- Si cambias la tarjeta gráfica o reinstalas, en el siguiente inicio se instala automáticamente un modelo adecuado (se desactiva con `ARUARU_LLM_AUTO_MODEL=0`). El primer inicio no descarga nada.
+- «Cabe» es solo una guía aproximada. Hoy la generación de texto se ejecuta en la CPU, así que se usa la memoria (RAM). El instalador usa por defecto `C:\aon-co-jp\open-easy-web\`; puedes elegir otra unidad y carpeta.
+
+### Português (BR)
+
+- Na página inicial, "Modelos para esta máquina" mostra os modelos de IA que devem caber na memória do seu PC, tablet, celular ou servidor.
+- Toque em "Instalar" e o modelo é baixado e ativado. A explicação está em 10 idiomas.
+- Se você trocar a placa de vídeo ou reinstalar, um modelo adequado é instalado automaticamente na próxima inicialização (desative com `ARUARU_LLM_AUTO_MODEL=0`). A primeira inicialização não baixa nada.
+- "Cabe" é apenas uma estimativa. Hoje a geração de texto roda na CPU, por isso usamos a memória (RAM). O instalador usa por padrão `C:\aon-co-jp\open-easy-web\`; você pode escolher outra unidade e pasta.
+
+### Русский
+
+- На главной странице раздел «Модели для этого устройства» показывает ИИ-модели, которые, скорее всего, поместятся в память вашего ПК, планшета, телефона или сервера.
+- Нажмите «Установить» — модель скачается и сразу включится. Пояснение есть на 10 языках.
+- Если сменить видеокарту или переустановить систему, при следующем запуске подходящая модель установится сама (отключить: `ARUARU_LLM_AUTO_MODEL=0`). При самом первом запуске ничего не скачивается.
+- «Подходит» — лишь примерная оценка. Сейчас текст генерируется на процессоре, поэтому учитывается оперативная память (RAM). Установщик по умолчанию использует `C:\aon-co-jp\open-easy-web\`; диск и папку можно выбрать.
+
+(简体中文: AI 翻译,尚未经母语者确认。; 繁體中文(台灣): AI 翻譯,尚未經母語者確認。; 한국어: AI 번역이며 원어민 확인 전입니다.; Deutsch: KI-Übersetzung, noch nicht von Muttersprachlern geprüft.; Français: Traduction par IA, pas encore relue par des locuteurs natifs.; Español: Traducción por IA, aún sin revisión de hablantes nativos.; Português (BR): Tradução por IA, ainda sem revisão de falantes nativos.; Русский: Перевод выполнен ИИ, носителями языка пока не проверен.)
+
+## 2026-11-19 大きなAIモデルを動かす取り組みの現状 / Running bigger AI models: status and plan
+
+### 日本語(やさしい説明)
+**いまできること**
+- 大きなAIモデルは、重さが1つのファイルでなく「いくつかに分かれたファイル」で配られることがあります。これを**自動で全部ダウンロードして、読み込める**ようになりました(`aruaru-llm` と `open-cuda`)。
+- 本物の Qwen2.5-3B(約6GB、2つに分割)を、このパソコン(メモリ32GB、GPUなし)で**実際に読み込んで文章を作れる**ことを確かめました。読み込み約48秒、文章づくりは1秒に約0.6語(遅いけれど動きます)。
+- 読み込みは「ファイルを丸ごとメモリに入れず、必要な所だけ読む」やり方に変えたので、メモリの使いすぎが減りました。
+
+**調べて分かったこと**
+- 東芝の「シミュレーテッド分岐」や富士通の「デジタルアニーラ」は、「たくさんの選択肢から一番よい組み合わせを探す」道具です。AIの文章づくりを直接速くする道具ではありません。使うなら「どの部品をどこに置くか」「どの部分を何ビットに縮めるか」を決める所です(研究論文はまだ少ない)。
+- 「折り畳み(Model Folding)」は、似た部分をまとめてモデルを小さくする方法です。DeepSeek の MLA(記憶の圧縮)・MoE(専門家を必要な分だけ使う)・FP8(数を小さく表す)も同じ仲間の工夫です。
+- 実験: 学習済みの Qwen に後からMLA圧縮をかけると、記憶を25%減らしただけで品質が落ち(迷い度 7.1→12.7)、50%減らすと文が壊れました。**後付けのMLAは使えない**と分かりました(DeepSeekは最初からその形で学習しています)。
+
+**これから作るもの(確認なしで順に進めます)**
+1. 重みを小さい数(f16や量子化)のまま使って、7B級(約12GB)もこのパソコンで動かす。
+2. 層ごと・専門家ごとに「何ビットにするか」を自動で決める(まずは普通の計算、あとで焼きなましやSBも試す)。
+3. 似た層をまとめる「折り畳み」を試し、品質と速さを必ず測る。
+4. 速さの測定を毎回記録し、実用になるまで作る・試す・直すを何度も繰り返す。
+
+**約束**: 未了の作業は、危険でない限り**いちいち確認せず進めます**。ただし、取り返しのつかない削除や、秘密の公開はしません。結果が悪かったときは、悪かったと正直に書きます。
+
+### English (plain words, easy to read)
+**What works now**
+- Big AI models are often shipped as **several files** instead of one. The program can now **download all the parts and load them** (`aruaru-llm` and `open-cuda`).
+- We loaded the real Qwen2.5-3B model (about 6 GB, 2 parts) on this PC (32 GB memory, no GPU) and **it wrote text**. Loading took about 48 seconds; writing was about 0.6 words per second (slow, but it works).
+- Loading now reads only the parts it needs instead of copying whole files into memory, so it uses less memory.
+
+**What we learned**
+- Toshiba's "Simulated Bifurcation" and Fujitsu's "Digital Annealer" help **pick the best combination from many choices**. They do not make an AI write faster by themselves. They could help decide where to put each part, or how many bits each part gets (papers on this are still few).
+- "Model folding" means merging similar parts to make a model smaller. DeepSeek's MLA (memory compression), MoE (use only the needed experts) and FP8 (small numbers) are cousins of this idea.
+- Our test: adding MLA compression to an already-trained Qwen cut memory by 25% but made quality worse (perplexity 7.1 to 12.7), and a 50% cut broke the text. **Adding MLA afterwards does not work** (DeepSeek trains with it from the start).
+
+**What we will build next (we go on without asking)**
+1. Keep weights in small numbers (f16 or quantized) so 7B-size models (about 12 GB) can run on this PC.
+2. Choose bits per layer and per expert automatically (plain math first, annealing or SB later).
+3. Try "folding" similar layers, and always measure quality and speed.
+4. Record every speed test, then build, test and fix again and again until it is truly useful.
+
+**Promise**: for unfinished work we **go on without asking each time**, unless it is dangerous. We never do irreversible deletes or publish secrets. If a result is bad, we say so honestly.
+
+## 2026-11-19 大きなAIを小さなパソコンで動かす / Running big AI on a small PC (10 languages, easy words)
+
+### 日本語
+**できたこと**: 大きなAIは、重さが「いくつかのファイル」に分かれていることがあります。それを自動でぜんぶダウンロードして、読めるようになりました。本物のAI(Qwen 3B、約6GB)を、GPUのないふつうのパソコンで動かして、文章を作れました。ちょっと遅いけれど、ちゃんと動きます。
+**わかったこと**: 東芝や富士通の「最適な組み合わせを探す機械」は、AIを直接速くする道具ではありません。「どの部品を何ビットに縮めるか」を決める手伝いに使えるかもしれません。作ったあとの記憶の圧縮(MLA)は、品質が落ちるので使えませんでした。
+**これから**: AIの重さを小さい数で持って、もっと大きなAI(約12GB)も動かします。「確認しないで進める」ので、止まらずに作って、試して、直します。
+
+### English
+**Done**: Big AI models often come in several files. The program now downloads every part and loads them. We ran a real AI (Qwen 3B, about 6 GB) on an ordinary PC without a GPU, and it wrote text. It is a bit slow, but it works.
+**Learned**: The "best-combination finder" machines from Toshiba and Fujitsu do not make AI faster by themselves. They might help decide how many bits each part gets. Squeezing the memory afterwards (MLA) hurt quality, so we cannot use it.
+**Next**: Keep the AI's weights in small numbers so even bigger AI (about 12 GB) can run. We go on without asking each time: build, test and fix again and again.
+
+### 简体中文
+**已完成**:大型AI的权重常被拆成好几个文件。现在程序能自动全部下载并读取。我们在没有显卡的普通电脑上运行了真正的AI(Qwen 3B,约6GB),它能写出文字。虽然有点慢,但是能用。
+**发现**:东芝和富士通那种"找最佳组合的机器"不能直接让AI变快,也许能帮忙决定每个部分用几位数。事后压缩记忆(MLA)会让质量变差,所以不能用。
+**接下来**:用更小的数字保存权重,让更大的AI(约12GB)也能运行。我们不会每次都问,而是不停地做、测、改。
+
+### 繁體中文
+**已完成**:大型AI的權重常被拆成好幾個檔案。現在程式能自動全部下載並讀取。我們在沒有顯示卡的一般電腦上執行了真正的AI(Qwen 3B,約6GB),它能寫出文字。雖然有點慢,但可以用。
+**發現**:東芝和富士通那種「找最佳組合的機器」不能直接讓AI變快,也許能幫忙決定每個部分用幾位元。事後壓縮記憶(MLA)會讓品質變差,所以不能用。
+**接下來**:用更小的數字保存權重,讓更大的AI(約12GB)也能執行。我們不會每次都詢問,而是不停地做、測、改。
+
+### 한국어
+**해낸 일**: 큰 AI는 무게(가중치)가 여러 파일로 나뉘어 있을 때가 많아요. 이제 프로그램이 전부 자동으로 내려받아 읽을 수 있어요. 그래픽카드가 없는 보통 컴퓨터에서 진짜 AI(Qwen 3B, 약 6GB)를 돌려 글을 만들었어요. 조금 느리지만 잘 돼요.
+**알게 된 것**: 도시바와 후지쯔의 "가장 좋은 조합을 찾는 기계"는 AI를 직접 빠르게 하지는 않아요. 각 부분을 몇 비트로 줄일지 정하는 데 도움이 될 수는 있어요. 나중에 기억을 줄이는 방법(MLA)은 품질이 떨어져서 쓸 수 없었어요.
+**앞으로**: 무게를 더 작은 숫자로 들고 있어서 더 큰 AI(약 12GB)도 돌릴 거예요. 매번 묻지 않고 만들고, 시험하고, 고치기를 계속해요.
+
+### Deutsch
+**Geschafft**: Große KI-Modelle bestehen oft aus mehreren Dateien. Das Programm lädt jetzt alle Teile selbst herunter und liest sie. Wir haben eine echte KI (Qwen 3B, etwa 6 GB) auf einem normalen PC ohne Grafikkarte laufen lassen, und sie hat Text geschrieben. Etwas langsam, aber es klappt.
+**Gelernt**: Die „Maschinen, die die beste Kombination suchen“ von Toshiba und Fujitsu machen eine KI nicht von selbst schneller. Sie könnten helfen zu entscheiden, wie viele Bits jeder Teil bekommt. Das nachträgliche Zusammendrücken des Gedächtnisses (MLA) machte die Qualität schlechter, deshalb nutzen wir es nicht.
+**Als Nächstes**: Die Gewichte in kleineren Zahlen speichern, damit noch größere KI (etwa 12 GB) läuft. Wir machen ohne Rückfrage weiter: bauen, testen, verbessern, immer wieder.
+
+### Français
+**Fait** : Les grosses IA sont souvent livrées en plusieurs fichiers. Le programme télécharge maintenant toutes les parties et les lit. Nous avons fait tourner une vraie IA (Qwen 3B, environ 6 Go) sur un PC ordinaire sans carte graphique, et elle a écrit du texte. C'est un peu lent, mais ça marche.
+**Appris** : Les « machines qui cherchent la meilleure combinaison » de Toshiba et Fujitsu ne rendent pas l'IA plus rapide toutes seules. Elles pourraient aider à choisir combien de bits donner à chaque partie. Compresser la mémoire après coup (MLA) a abîmé la qualité, donc nous ne l'utilisons pas.
+**Ensuite** : Garder les poids en plus petits nombres pour faire tourner de plus grosses IA (environ 12 Go). Nous continuons sans demander à chaque fois : construire, tester, corriger, encore et encore.
+
+### Español
+**Hecho**: Las IA grandes suelen venir en varios archivos. Ahora el programa descarga todas las partes y las lee. Ejecutamos una IA real (Qwen 3B, unos 6 GB) en un PC normal sin tarjeta gráfica y escribió texto. Es un poco lento, pero funciona.
+**Aprendido**: Las «máquinas que buscan la mejor combinación» de Toshiba y Fujitsu no hacen más rápida a la IA por sí solas. Podrían ayudar a decidir cuántos bits da cada parte. Comprimir la memoria después (MLA) empeoró la calidad, así que no lo usamos.
+**Siguiente**: Guardar los pesos con números más pequeños para que corran IA aún más grandes (unos 12 GB). Seguimos sin preguntar cada vez: construir, probar y arreglar una y otra vez.
+
+### Português
+**Feito**: As IAs grandes costumam vir em vários arquivos. Agora o programa baixa todas as partes e as lê. Rodamos uma IA de verdade (Qwen 3B, cerca de 6 GB) num PC comum sem placa de vídeo, e ela escreveu texto. É um pouco lento, mas funciona.
+**Aprendido**: As «máquinas que procuram a melhor combinação» da Toshiba e da Fujitsu não deixam a IA mais rápida sozinhas. Elas podem ajudar a decidir quantos bits cada parte recebe. Comprimir a memória depois (MLA) piorou a qualidade, então não usamos.
+**Próximo**: Guardar os pesos em números menores para rodar IAs ainda maiores (cerca de 12 GB). Seguimos sem perguntar toda vez: construir, testar e consertar, de novo e de novo.
+
+### Русский
+**Сделано**: Большие ИИ часто поставляются в нескольких файлах. Теперь программа сама скачивает все части и читает их. Мы запустили настоящий ИИ (Qwen 3B, около 6 ГБ) на обычном компьютере без видеокарты, и он написал текст. Немного медленно, но работает.
+**Узнали**: «Машины, которые ищут лучшую комбинацию» от Toshiba и Fujitsu сами по себе ИИ не ускоряют. Возможно, они помогут решить, сколько бит дать каждой части. Сжатие памяти задним числом (MLA) ухудшило качество, поэтому мы его не используем.
+**Дальше**: Хранить веса в меньших числах, чтобы запускать ещё более крупные ИИ (около 12 ГБ). Мы продолжаем без вопросов каждый раз: строим, проверяем, исправляем снова и снова.
+
+## 2026-11-19 限界前チェックポイント(大きなモデル対応、別アカウントでの再開用)
+
+**完了(すべて main に push 済み)**
+- 分割重み(`model.safetensors.index.json`+複数ファイル)の取得(`aruaru-llm` `model_catalog.rs`、単一ファイルが404のときだけ・ストリーム書き込み・導入判定対応)と読み込み(`open-cuda-llm` `qwen_arch.rs`、mmap)。モックと合成データのテスト成功。
+- 実機確認(32GB・GPUなし・CPU): Qwen2.5-3B(2分割・6.17GB)を読み込み生成成功(読込約48秒、約0.6語/秒、ppl 8.5)。1.5Bは ppl 7.08。
+- 後付けMLA(PCA較正)は実用外: d_c=96でKV−25%だが ppl 12.7、d_c=64で崩れる(ppl 245)。MLAは学習時から入れる設計でないと効かない。
+- FP8読み込み `QwenModel::load_fp8`: 量子化を二分探索化・ホスト並列化し、行列積を融合(`opencuda-blas`)。1.5Bで読込340→21秒、生成1067→69秒、ppl 7.27(f32は7.08)、メモリ約1/4。ただしf32より約2.8倍遅い。
+- 調査: 東芝SB・富士通デジタルアニーラは組合せ最適化の道具でLLM推論を直接速めない。LLMでの先行例はTree-Ising(重みのQUBO修復、自己申告値)のみ。エキスパートごとのビット配分は線形/整数計画(GEMQ・BitsMoE)。「折り畳み」はModel Folding(ICLR 2025)・Layer Collapse・Sliding-Window Merging・GPTailor。DeepSeekのMLA・MoE遅延読み込みは `deepseek_arch.rs` に実装済み(実在チェックポイントでの通しは未確認)。
+- クラウドセッションに調査文書 `docs/LARGE-MODEL-TECHNIQUES.md`(ブランチ `docs/large-model-techniques`)を依頼済み(終了通知は来ない。`aruaru-llm` のブランチを確認すること)。
+
+**未了(確認なしで順に進める方針)**
+1. 層ごとの感度測定(層を飛ばす/隣接層を平均する「折り畳み」)と、ビット配分の自動決定(まず貪欲法、次に焼きなまし・SB)。`QwenModel` に層スキップ機構を足して `qwen_mla_bench` 系の例で ppl と速度を測る。
+2. FP8がf32より遅い問題(約2.8倍): SIMD化・f16保持・行単位スケール見直し。
+3. 7B級(約12〜15GB)の実読み込み: FP8読み込みで32GB機に載るかを実測(要ダウンロード許可内の公開モデル)。
+4. 実3BのFP8読み込み実測、`pl2pl llm setup` への分割モデル・FP8の反映、`aruaru-llm` のカタログに3Bの実機確認の記載。
+5. 10言語文書は現状分を追記済み。上記の結果が出たら更新する。翻訳はAI作成でネイティブ検証前。
+
+**注意**: `F:\open-cuda` の作業ブランチは `perf/serial-small-gemm`(`HEAD:main` を指定して push している)。`F:\aruaru-llm` は `Cargo.lock` と `data/` に未コミットの変更がある(別作業のもの、コミットしない)。モデルは `F:\aruaru-llm\models\qwen2.5-{1.5b,3b}-instruct`(サイズが大きいので消さない)。測定スクリプト: `open-cuda/crates/open-cuda-llm/examples/qwen_mla_bench.rs`(`QWEN_FP8=1` でFP8、引数にd_c)。
+
+## 2026-11-19 まとめ: 大きなAIを小さなパソコンで / Summary: big AI on a small PC
+
+### 日本語(やさしい説明)
+**できたこと**
+- 重さが「いくつかのファイル」に分かれた大きなAIを、自動でぜんぶダウンロードして読めるようになりました(`aruaru-llm`・`open-cuda`)。
+- 本物の Qwen2.5-3B(約6GB)を、GPUのないふつうのパソコンで動かして文章を作れました(読み込み約48秒、1秒に約0.6語)。
+- 重さを「FP8」という小さい数で持つ方法を作りました。メモリが約4分の1になり、品質はほぼ同じです(迷い度 7.08→7.27)。速くする工夫で、読み込みは340秒→21秒、文章づくりは1067秒→69秒になりました。まだ普通の方法より約2.8倍遅いので、メモリが足りないときの手段です。
+
+**試してわかったこと(正直な結果)**
+- 後から記憶を圧縮する「MLA」は、品質が落ちるので使えません(25%減で迷い度 7.1→12.7、50%減で文が壊れる)。
+- 「折り畳み(層を飛ばす)」を1.5Bで試しました。1層ずつ飛ばすと、真ん中あたりの層(5・10・12・15番など)は飛ばしてもほとんど平気でしたが、1番・24番・26番は大事でした。3層飛ばすと迷い度7.19(元7.08)で、速さは約7%だけ上がり、答えが少し不正確になりました。6層以上飛ばすと壊れます。**学び直しなしの層飛ばしは、効果が小さい**とわかりました。
+- 東芝の「シミュレーテッド分岐」や富士通の「デジタルアニーラ」は、「いちばん良い組み合わせを探す」道具で、AIを直接速くはしません。使うなら「どの層を飛ばすか」「何ビットにするか」を決める所ですが、まだ試していません。
+
+**これから(確認せず順に進めます)**
+1. 層を飛ばす組み合わせを、焼きなましやSBで探して、貪欲法と比べる。
+2. FP8を速くする(SIMD、f16保持)。
+3. 7B(約12〜15GB)をFP8で32GBのパソコンに載せられるか測る。
+4. `pl2pl llm setup` に分割モデルとFP8を反映する。
+
+**約束**: 危なくない未了は、いちいち聞かずに進めます。取り返しのつかない削除や秘密の公開はしません。悪い結果も正直に書きます。
+
+### English (plain and friendly)
+**What works now**
+- Big AI models are often split into several files. The program now downloads every part and loads them (`aruaru-llm` and `open-cuda`).
+- We ran the real Qwen2.5-3B model (about 6 GB) on an ordinary PC with no GPU, and it wrote text (about 48 seconds to load, about 0.6 words per second).
+- We built a way to keep the weights as small "FP8" numbers. Memory drops to about a quarter and quality stays almost the same (perplexity 7.08 to 7.27). After speed fixes, loading went from 340 s to 21 s and writing from 1067 s to 69 s. It is still about 2.8 times slower than the normal way, so it is for when memory is short.
+
+**What we tested (honest results)**
+- Squeezing the memory afterwards with MLA does not work: it hurts quality (25% smaller gave perplexity 7.1 to 12.7; 50% smaller broke the text).
+- We tried "folding" by skipping layers on the 1.5B model. Skipping one layer at a time showed that many middle layers (5, 10, 12, 15 and so on) barely matter, while layers 1, 24 and 26 matter a lot. Skipping three layers gave perplexity 7.19 (from 7.08), only about 7% faster, with slightly less accurate answers. Skipping six or more breaks the model. **Skipping layers without retraining gives only a small gain.**
+- Toshiba's Simulated Bifurcation and Fujitsu's Digital Annealer find the best combination among many choices. They do not speed up the AI by themselves. They could help choose which layers to skip or how many bits to use, but we have not tried that yet.
+
+**What comes next (we go on without asking)**
+1. Search for the best set of layers to skip with annealing or SB, and compare with the greedy way.
+2. Make FP8 faster (SIMD, f16 storage).
+3. Measure whether 7B (about 12 to 15 GB) fits a 32 GB PC with FP8.
+4. Bring sharded models and FP8 into `pl2pl llm setup`.
+
+**Our promise**: for safe unfinished work we go on without asking each time. We never do irreversible deletes or publish secrets, and we report bad results honestly.
+
+## 2026-11-19 最後の追記: 飛ばす層の探し方 / Last note: choosing which layers to skip
+
+### 日本語(やさしい説明)
+- **やったこと**: AIの「飛ばしてもよい層」を、3つ選ぶ問題として2通りで探しました。(1)貪欲法=いちばん良い層を1つずつ足す。(2)焼きなまし=選び方を少しずつ入れ替えて探す。同じ試行回数(78回)で比べました。
+- **結果(Qwen2.5-1.5B)**: 貪欲法は {5, 12, 15} 番で迷い度 7.187(元は 7.08)。焼きなましは {12, 15, 16} 番で 7.438。**この小さな問題では、焼きなましは貪欲法に勝てませんでした。** 5個の場合の比較は途中です。
+- **気をつけること**: 1つの短い文だけで選んでいるので、その文にだけ合った選び方かもしれません。別の文でも確かめる必要があります。
+- **ずっと言えること**: 東芝SBや富士通デジタルアニーラは、層がもっと多い大きなAIや、ビット配分のように選択肢が爆発する問題で試す価値があります。今回の小さな問題では、ふつうの方法で足ります。
+- **アップロード**: コードと文書は GitHub の `main` に push しました。VPS には、きれいなクローンだけ安全に更新します(再ビルドや再起動はしません)。
+- **これから(確認せず進めます)**: 5個の比較を終える、別の文で確かめる、FP8を速くする、7Bを測る、`pl2pl llm setup` に反映する。
+
+### English (plain and friendly)
+- **What we did**: We looked for three "layers that are safe to skip" in two ways. (1) Greedy: add the best layer one at a time. (2) Annealing: swap choices little by little. Both got the same number of tries (78).
+- **Result (Qwen2.5-1.5B)**: Greedy picked layers {5, 12, 15} with perplexity 7.187 (the original is 7.08). Annealing picked {12, 15, 16} with 7.438. **On this small problem, annealing did not beat greedy.** The comparison for five layers is still running.
+- **A caution**: We chose using one short sentence, so the choice may fit only that sentence. We must check with other sentences.
+- **What still holds**: Toshiba's Simulated Bifurcation and Fujitsu's Digital Annealer are worth trying on bigger models with many more layers, or on problems like bit allocation where the choices explode. For this small problem, the plain method is enough.
+- **Upload**: Code and docs are pushed to `main` on GitHub. On the VPS we only update clean clones safely (no rebuild, no restart).
+- **Next (we go on without asking)**: finish the five-layer comparison, check with other sentences, make FP8 faster, measure 7B, and bring it into `pl2pl llm setup`.
+
+## 2026-11-20 追記: 7Bも動いた / Update: 7B runs too
+
+### 日本語(やさしい説明)
+- **7Bが32GBのパソコンで動きました**: Qwen2.5-7B-Instruct(4つに分かれた約15GB)を、FP8で読み込んで文章を作れました。メモリに収まり、読み込みは約3.5分、文章づくりは1語あたり約8秒(とても遅いけれど、動きます)。品質の目安の迷い度は、評価用の文で8.6、別の文で12.2でした。1.5Bの別の文(12.1)とほぼ同じ値です。
+- **層を飛ばす方法(折り畳み)の最終結果**: 1つの文だけで飛ばす層を選ぶと、別の文で悪くなりました(5・12・15番を飛ばすと別の文で約15%悪化、5層飛ばすとさらに悪化)。速くなるのは最大でも約14%です。**学び直しなしでは、実用的な効果は小さい**です。貪欲法と焼きなましは、この小さな問題では大差ありませんでした。
+- **`pl2pl llm setup` について**: 分割モデルの対応は `aruaru-llm` の `main` に入りました。`pl2pl` が使う配布版(v0.2.5)にはまだ入っていないので、新しい版を出すまで、3Bは今までどおり自動で小さいモデルに下がります。新版を出したら3B・7Bも選べるようにします。
+- **これから(確認せず進めます)**: FP8をもっと速くする(SIMDなど)、新しい版の公開、クラウドで頼んだ調査文書の確認。
+
+### English (plain and friendly)
+- **7B runs on a 32 GB PC**: We loaded Qwen2.5-7B-Instruct (about 15 GB in four parts) as FP8 and it wrote text. It fits in memory; loading took about 3.5 minutes and writing took about 8 seconds per word (very slow, but it works). The quality score (perplexity) was 8.6 on the test sentence and 12.2 on other sentences, about the same as the 1.5B model on other sentences (12.1).
+- **Final result for layer skipping ("folding")**: Choosing layers to skip from a single sentence got worse on other sentences (skipping layers 5, 12 and 15 was about 15% worse on other sentences, and skipping five was worse still). The speed gain is at most about 14%. **Without retraining, the practical gain is small.** On this small problem, greedy search and annealing made little difference.
+- **About `pl2pl llm setup`**: Sharded-model support is now on `main` in `aruaru-llm`. The released build that `pl2pl` uses (v0.2.5) does not have it yet, so until a new release, 3B still falls back to a smaller model as before. After the new release, 3B and 7B can be chosen.
+- **Next (we go on without asking)**: make FP8 faster (SIMD and more), publish a new release, and check the survey document requested from the cloud.

@@ -1,0 +1,486 @@
+# aruaru-llm
+
+> 🎯 **aruaru-db × RPoem SET policy (2026-08-29)**: `aruaru-db`'s
+> `CLAUDE.md` opening note explains that aruaru-db only delivers "no
+> REST API needed, compatible with WunderGraph Cosmo's paid
+> Enterprise tier" when paired (SET) with RPoem. This repo
+> (aruaru-llm) is instead paired with `open-cuda` as an independent
+> AI inference layer (see the "no-contract independent AI" section)
+> and is a separate concern from that REST/API-key work — but any
+> future expansion of its own dynamic tenant registration
+> (`src/tenants.rs`) should still ask "does this strengthen the
+> aruaru-db+RPoem SET value?" before adding REST alternatives.
+
+*日本語*: [README.md](README.md) ·
+*English*: this is the original ·
+*Other languages*: [Deutsch](README-German.md) · [Italiano](README-Italian.md) ·
+[Français](README-French.md) · [Русский](README-Russian.md) ·
+[Українська](README-Ukrainian.md) · [עברית](README-Hebrew.md) ·
+[فارسی](README-Persian.md) · [العربية](README-Arabic.md)
+
+> 📌 **Recent update (2026-09-11)**: Wired up `open-cuda-llm::QwenModel`
+> (Qwen2/Qwen2.5 architecture: RoPE, Grouped Query Attention, RMSNorm,
+> SwiGLU) as `GET/POST /v1/qwen/*` and `POST /v1/generate-qwen` — the
+> existing `/v1/generate` (GPT-2 engine) path is untouched. Verified
+> end-to-end against real weights (Qwen2.5-0.5B-Instruct). Also made
+> the recommend/step-size messages bilingual, and added a 4-language
+> (EN/JA/zh-CN/zh-TW) AI/LLM news digest (`/v1/news/ai-refresh` /
+> `/v1/news/ai-latest`). See the 2026-09-11 HANDOFF entry in
+> [CLAUDE.md](CLAUDE.md).
+>
+> 📌 **Recent update (2026-09-03)**: Per user instruction to target
+> 32GB-VRAM-class NVIDIA/AMD/Intel GPUs and support F16/F32/F64/F128
+> going forward, `src/hardware.rs`'s VRAM-recommendation heuristic now
+> takes an `InferencePrecision` (F16/F32/F64/F128, bytes/param) so the
+> same VRAM budget recommends a bigger model at fp16 than at fp32 (the
+> existing `recommend_id_for_vram` still delegates with F32 as default,
+> fully backward compatible). **Honest disclosure**: F128 has no native
+> GPU hardware support anywhere, so it's included only for type-system
+> consistency with open-cuda's `KernelArg`, not as a real inference
+> precision. 9/9 tests pass. See [CLAUDE.md](CLAUDE.md) for details.
+>
+> 📌 **Recent update (2026-08-26)**: Changed the `/v1/generate-with-search`
+> prompt assembly from plain concatenation to a QA-style format
+> (`web_search::build_search_augmented_prompt`: `"Search results:
+> ...\nQuestion: {prompt}\nAnswer:"`). The idea is that GPT-2's
+> pretraining corpus contains a lot of Q&A-formatted text, so this
+> pattern may make greedy decoding more likely to continue in a way
+> that actually uses the preceding search context — **this is an
+> attempted improvement, not a guarantee** that the model now reliably
+> uses search results (GPT-2/distilgpt2 have no instruction-tuning).
+> Switching to an instruction-tuned model and adding a summarization
+> step were investigated but not completed this session, so both are
+> deferred. **This change only touches prompt string assembly** —
+> open-directx/open-cuda (the GPU inference *speed* layer) were not
+> touched, since they don't affect response *accuracy*. See
+> [CLAUDE.md](CLAUDE.md)'s 2026-08-26 entry for details.
+>
+> 📌 **Recent update (2026-08-10)**: Wired `open-cuda`'s new `GptModel::
+> generate_with_repetition_penalty` (CTRL-style repetition penalty) into
+> `/v1/generate`, **enabled by default** (`ARUARU_LLM_REPETITION_PENALTY`
+> env var, default `1.3`; set to `1.0` to restore the old no-penalty
+> behavior). This directly addresses a known GPT-2 base-model
+> degeneracy — endless repetition of the same string (e.g. a user
+> reported it looping "Student: Hello" forever while using
+> `open-english`) — since the base model has no dialogue fine-tuning.
+> Verified on real GPT-2 124M weights on the `open-cuda` side: without
+> the penalty the loop actually reproduces; with `penalty=1.3` it stops
+> and produces grammatically natural conversational text instead. Also
+> verified via a live HTTP request:
+> `POST /v1/generate {"prompt":"...Student: Hello\nTrainer:",
+> "max_new_tokens":24}` returned a non-repeating reply. At `penalty=1.0`
+> the output is byte-identical to the existing `generate()` API, so no
+> other tests regress. See [CLAUDE.md](CLAUDE.md) for details.
+>
+> *日本語*: `open-cuda`側`GptModel::generate_with_repetition_penalty`
+> (CTRL方式の繰り返しペナルティ)を`/v1/generate`へ配線し、既定で有効化
+> した(`ARUARU_LLM_REPETITION_PENALTY`環境変数、既定値`1.3`)。対話
+> ファインチューニング無しの素のGPT-2貪欲デコードが陥る既知の劣化モード
+> (同一文字列の無限ループ)への根本対応。詳細は[CLAUDE.md](CLAUDE.md)参照。
+
+> 📌 **Recent update (2026-08-08)**: Wired an opt-in (default-off)
+> MLA-style KV cache compression path (`open-cuda`'s DeepSeek-V3-inspired
+> implementation, `GptModel::enable_mla_kv_compression`) into
+> `/v1/generate` via `ARUARU_LLM_ENABLE_MLA_KV_COMPRESSION=1`. For GPT-2
+> 124M this is head_dim=64 -> d_c=16 (75% smaller per-token KV storage),
+> computed from the actual loaded model's config, not a device-specific
+> feature (works on CPU as well as `real-vulkan`). **Honest disclosure**:
+> the down/up-projection matrices are randomly initialized (untrained),
+> so this is lossy compression, and a real end-to-end test against the
+> real GPT-2 124M weights showed visibly degraded/more repetitive output
+> compared to the uncompressed path — which is why it defaults off. See
+> [CLAUDE.md](CLAUDE.md) for the measured before/after generations.
+
+> 📌 Pending task (2026-08-06): a plan exists to incorporate Toshiba SBM / DeepSeek techniques. See [CLAUDE.md](CLAUDE.md) for details.
+
+> 📌 **Recent update (2026-08-07)**: verified via a real running binary +
+> live HTTP requests that `/v1/chat` and `/v1/classify-security` do
+> **not** suffer the "empty input → 503" bug previously fixed for
+> `/v1/generate` and `/v1/translate` — both correctly return 200 for
+> empty input. No code change was needed. See [CLAUDE.md](CLAUDE.md) for
+> details.
+
+> **Updated 2026-07-25**: The dev-policy file (`CLAUDE.md`) heading was
+> renamed from "Development Policy & Dev Environment Rules" to
+> "Design Philosophy & Development Policy & Dev Environment Rules",
+> to more clearly separate the project's design philosophy (what we
+> value), development policy (how we work), and dev environment rules
+> (concrete operational conventions). See `CLAUDE.md` for details.
+
+
+A shared "AI chat commerce" response service for the `aruaru` ecosystem
+(aruaru-tokyo, aruaru-db, e-gov.info, karu.tokyo, etc). Instead of each
+site implementing its own chat-reply logic, they call this single HTTP
+service — centralizing the one place that needs to change when real LLM
+inference is eventually wired in.
+
+> ⚠️ **Honest disclosure (important, updated 2026-07-25)**: as of
+> 2026-07-25 this service integrates `open-cuda`'s `opencuda-llm` crate
+> (real trained GPT-2 124M weights, `openai-community/gpt2`), so
+> `POST /v1/generate` now performs **actual autoregressive text
+> generation** — the "no autoregressive generation" claim below no longer
+> applies to that endpoint. That said, **GPT-2 124M is a small, 2019-era
+> model and is not comparable to modern commercial LLMs like GPT-4** in
+> capability or knowledge. This is a demonstration that self-contained
+> generation works without an external LLM API contract, not a claim of
+> state-of-the-art quality — output is often grammatically fluent English
+> but is not guaranteed to be factually accurate (it can hallucinate).
+> `POST /v1/chat` (intent classification via `opencuda-bert`'s sentence
+> embeddings + cosine similarity, since 2026-07-21) remains a separate,
+> lightweight, fast path for canned replies — intentionally not merged
+> with generation. See [CLAUDE.md](CLAUDE.md) for details and rationale.
+
+## open-cuda is a required companion (SET) / open-cudaは必須の相方
+
+**English**: `aruaru-llm` is not usable on its own. The actual inference
+engine lives in [`open-cuda`](https://github.com/aon-co-jp/open-cuda) —
+the `opencuda-core` / `opencuda-cpu` / `opencuda-blas` / `opencuda-bert` /
+`open-cuda-llm` / `open-cuda-whisper` crates — and `aruaru-llm` pulls them
+in as Cargo **path dependencies** (`../open-cuda/crates/opencuda-*`),
+acting only as a thin HTTP layer over them. So:
+
+- **Building from source**: check out `open-cuda` next to `aruaru-llm`
+  (`.../repository/aruaru-llm` and `.../repository/open-cuda` side by
+  side). CI's `release.yml` clones it automatically before the build.
+- **Repos that consume `aruaru-llm`** (e.g. `open-english`) inherit this
+  requirement whenever they distribute or build `aruaru-llm` artifacts.
+  `open-cuda` is statically linked into the `aruaru-llm` binary (not a
+  separate process), so a released binary needs no extra install; a
+  source-built distribution needs the `open-cuda` checkout.
+- **Released binary**: already contains the `opencuda-*` code statically.
+  Only the Vulkan/DirectX GPU backends need a build with
+  `--features hw-detect-vulkan,real-vulkan,hw-detect-directx,real-dx12`
+  (the `installgpu` task in `aruaru-llm-installer.exe`, off by default).
+
+**日本語**: `aruaru-llm`は単体では成立しない。推論エンジンの本体は
+`open-cuda`の`opencuda-*`/`open-cuda-llm`/`open-cuda-whisper`クレートで
+あり、`aruaru-llm`はそれらをCargoのpath依存として取り込みHTTPで公開する
+薄い層にすぎない。ソースからビルドする場合は`aruaru-llm`の隣に
+`open-cuda`をcloneすること(CIは自動clone)。`aruaru-llm`を組み込む
+リポジトリ(`open-english`等)もこの前提を引き継ぐ——ただし`open-cuda`は
+`aruaru-llm`バイナリへ静的リンクされるため、リリース済みバイナリを使う
+限り別途インストールは不要。Vulkan/DirectX GPUバックエンドのみ
+`--features ...real-vulkan...`ビルド時に有効(`installgpu`、既定オフ)。
+
+## Paired ("SET") with open-cuda
+
+Depends on [`open-cuda`](https://github.com/aon-co-jp/open-cuda)'s
+`opencuda-core`/`opencuda-cpu`/`opencuda-blas`/`opencuda-bert` crates via a
+path dependency. On every `/v1/chat` request, `opencuda-bert` runs
+multilingual-e5-small's forward pass (calling into `opencuda-blas`'s real
+GEMM/Attention kernels on `opencuda_cpu::CpuDevice`) to embed the message,
+then compares it via cosine similarity against each intent's cached
+representative embedding. This is a real runtime call through open-cuda's
+compute pipeline, not just a `Cargo.toml` reference — verified by actually
+starting the server and exercising `POST /v1/chat`.
+
+That said, this is not real neural LLM inference (dialogue generation) —
+only the encoder forward pass; the autoregressive decoder remains
+unimplemented. GPU-specific fast paths (`GemmPath::CuBlas`/`RocBlas`/
+`OneMkl`) are still stubbed (CPU and generic-Vulkan paths are implemented).
+See open-cuda's `CLAUDE.md` HANDOFF section for details.
+
+**2026-07-25 update (availability fallback)**: if
+`models/multilingual-e5-small/` (470MB+) is missing or fails to load, this
+service now automatically falls back to the original bag-of-words dot
+product (`src/bow_fallback.rs`) instead of failing requests outright. The
+`/v1/chat` response's `engine` field always honestly reports which path was
+actually used (`embedding-cosine-v0-opencuda-bert-cpu` or
+`bow-dotproduct-v0-opencuda-cpu-fallback`) — classification quality is
+noticeably lower on the fallback path (keyword matching, not semantic
+understanding).
+
+## API
+
+- `POST /v1/chat` — `{"message": "...", "tenant": "..."(optional)}` → `{"reply": "...", "engine":
+  "...", "matched_intent": "..."}` (intent classification, lightweight/fast canned replies)
+- `POST /v1/generate` — `{"prompt": "...", "max_new_tokens": 16(optional, default 16, capped at 128), "tenant": "..."(optional)}`
+  → `{"completion": "...", "engine": "gpt2-124m-greedy-decode-v0-opencuda-llm-cpu", "disclosure": "..."}`
+  (real autoregressive generation via GPT-2 124M weights — heavier but genuine.
+  **Repetition penalty defaults to `1.3`** — `ARUARU_LLM_REPETITION_PENALTY`
+  env var to override, `1.0` disables it — to prevent endless-repetition
+  loops. English prompts
+  recommended, since GPT-2's BPE vocabulary is trained mostly on English text. Example, verified
+  end-to-end over real HTTP: `{"prompt": "The quick brown fox", "max_new_tokens": 16}` →
+  `"completion": "es are a great way to get a little bit of a kick out of your"`)
+- `GET /v1/models/catalog` — GPT-2-compatible models available to install
+  (`gpt2`/`distilgpt2`/`gpt2-medium`/`gpt2-large`/`gpt2-xl`, the last added
+  2026-07-27), which ones are already installed, and the currently active
+  model directory.
+- `POST /v1/models/install` / `POST /v1/models/select` — download a catalog
+  model from Hugging Face, and hot-swap the active model without a process
+  restart.
+- `GET /v1/recommend` (added 2026-07-27; precision parameter added
+  2026-09-05) — detects hardware (VRAM) via `open-cuda` (Vulkan) or
+  `open-directx` (DXGI) and returns a recommended GPT-2-family model size,
+  without downloading anything. Accepts an optional `?precision=f16|f32|
+  f64|f128` query param that scales the bytes-per-parameter estimate
+  (F16 lets roughly 2x the parameter count fit the same VRAM as F32);
+  defaults to `f32` when omitted (backward compatible), rejects unknown
+  values with `400`. Response includes `precision_used`. **Honest
+  disclosure**: this precision only affects the size estimate — it is not
+  yet wired into the actual model-load dtype (`open-cuda-llm` is still
+  fp32-oriented).
+- `POST /v1/recommend-and-download` (added 2026-07-27, backs the
+  "Download recommended LLM" button) — detects hardware → picks a
+  recommended size → downloads it from Hugging Face if not already present
+  (idempotent) → hot-swaps `/v1/generate` to use it. Returns
+  `{"recommendation": {...}, "already_installed":bool,
+  "switched_to_recommended":bool, "message_ja":"..."}`.
+- `GET /` (added 2026-07-27) — minimal static HTML UI (`static/index.html`,
+  no framework) with one "Download recommended LLM" button, progress
+  display, and a generation-test panel once switched.
+- `POST /v1/transcribe` (added 2026-08-29) — `{"pcm_f32_base64": "...",
+  "sample_rate": 16000, "language": "auto"(optional), "prompt": "recent context"(optional), "tenant": "..."(optional)}`
+  → `{"transcript": "...", "language": "...", "engine": "...", "disclosure": "..."}`.
+  `pcm_f32_base64` is 16 kHz mono f32 PCM as a little-endian byte array,
+  base64-encoded (the format open-english's `blobToPcm16k()` produces).
+  Speech recognition via whisper.cpp — spawns a **prebuilt `whisper-cli`
+  subprocess** (no Cargo feature; drop the CLI binary and a GGML model in
+  place, or set `ARUARU_LLM_WHISPER_CLI` / `ARUARU_LLM_WHISPER_MODEL`).
+  Without them it returns `503` + a link to whisper.cpp releases.
+  `sample_rate ≠ 16000` / bad base64 / audio over 10 minutes all return
+  `400`. See the "Speech recognition" section below.
+- `POST /admin/tenants` / `GET /admin/tenants` / `DELETE /admin/tenants/:host` — tenant registration management (`x-admin-token` header auth)
+- `GET /healthz` — health check
+- `GET /v1/runtime` — reports which compute backend is actually in use;
+  includes a `whisper` block (`available` / `backend` / `cli_path` /
+  `cli_present` / `model_path` / `model_present` / `detail`) added
+  2026-08-29 for `POST /v1/transcribe`.
+
+### Hardware detection → recommended LLM size (added 2026-07-27)
+
+`src/hardware.rs` implements a simple heuristic that picks a GPT-2-family
+size (124M/355M/774M/1.5B) from detected VRAM: <2GB → 124M, 2-4GB → 355M,
+4-8GB → 774M, 8GB+ → 1.5B; undetectable GPU / CPU-only → 124M (safe
+fallback). **Honest disclosure**: this is a rough size-vs-VRAM comparison
+(parameter count × 4 bytes, fp32 estimate), not a precise performance
+model — it ignores KV-cache and activation memory.
+
+GPU detection is opt-in via Cargo features `hw-detect-vulkan` /
+`hw-detect-directx` (disabled by default, so CPU-only or cross-compiled
+builds are not forced to depend on the Vulkan loader / Windows SDK). When
+enabled, Vulkan is preferred; if both features are enabled, the DXGI
+(DirectX) result is cross-checked against the Vulkan result and logged
+(`cross_check_agreement`). **Verified on real hardware**: running with
+`--features hw-detect-vulkan` on this machine's NVIDIA GeForce GT 730
+reported `vram_bytes=2104819712` — exactly matching the value previously
+recorded via DXGI in `open-cuda`'s CLAUDE.md, confirming both detection
+paths agree on this GPU.
+
+### Backend matrix (a llama.cpp-style honest list, 2026-09-03)
+
+`GET /v1/runtime`'s `backend_matrix` field returns this table with a
+runtime `status` per row (**reporting only** — the matrix changes no
+behaviour). Source of truth:
+[`open-cuda/OmniGPU-Design.md`](https://github.com/aon-co-jp/open-cuda/blob/main/OmniGPU-Design.md)
+§11.6 / §12.3.
+
+| Backend | Status | Notes |
+|---|---|---|
+| **cpu-simd** | implemented (always built in) | `open-cpu` runtime dispatch; AVX2+FMA3 measured ~3.34× vs scalar. Handles everything not offloaded to a GPU tier |
+| **vulkan-spirv** | implemented (`--features real-vulkan`) | `open-cuda` SPIR-V compute. The **portability backbone** (NVIDIA/AMD/Intel on Linux/Windows, macOS via MoltenVK). Known issue below |
+| **directx-dxil** | implemented (`--features real-dx12`) | `open-cuda` D3D12/DXIL, dense GEMM only. Fallback for Windows without Vulkan. Slower than CPU SIMD on GT 730 (measured) |
+| **cuda** | not supported | No native CUDA/cuBLAS backend in `open-cuda` (`GemmPath::CuBlas` is a stub). NVIDIA GPUs run through the Vulkan path |
+| **metal** | design intent only | Apple GPUs reached via MoltenVK (Vulkan-subset-on-Metal) with the existing SPIR-V kernels — no new backend. Real-machine verification pending |
+| **hip-rocm** | design intent only | AMD native (hipBLASLt). Optional accelerated path only. The portable route for AMD is Vulkan + `VK_EXT_shader_float8` (shipping in Adrenalin 25.10.2+) |
+| **sycl-levelzero** | design intent only | Intel Arc/Xe native (oneAPI Level Zero). Optional. Intel GPUs are covered by the Vulkan/SPIR-V path today |
+| **webgpu-wasm** | design intent only | Browser inference via wgpu/WebGPU (W3C Candidate Recommendation Draft, 2026-05). Future option |
+
+**Design philosophy**: Vulkan + SPIR-V is the portability backbone;
+CUDA/HIP/SYCL/Metal are *optional* accelerated paths, never a
+prerequisite. No branching on vendor ID — capabilities
+(`supports_spirv` / `supports_fp8_tensor_core` / …) are negotiated.
+
+### DeepSeek-"Engram"-style KV-cache/weight offload: investigated and declined (2026-08-08)
+
+We investigated whether DeepSeek's "Engram"-style technique — evicting
+static knowledge (KV-cache or weight shards) from VRAM to system RAM and
+reloading on demand — could help this service run on small-VRAM GPUs like
+the GT 730. **After reading the actual code, we declined to implement
+it** — not because it is hard, but because the `open-cuda` inference path
+this repo depends on has no VRAM-resident state to evict in the first
+place. Every GEMM/Attention/softmax dispatch in `opencuda-blas` (i.e.
+every `sgemm` call that goes to Vulkan) allocates a VRAM buffer through a
+`ScopedAlloc` RAII guard (`opencuda-blas/src/lib.rs`), copies host→device,
+computes, copies device→host, and frees it immediately — nothing remains
+in VRAM once the call returns. Both the GPT-2 weights (`GptModel`'s
+`word_embeddings` and per-layer `Linear`s) and the KV cache
+(`open-cuda-llm::KvCacheHead`'s `k`/`v`/`k_latent`/`v_latent`) are plain
+`Vec<f32>` that live in system RAM for their entire lifetime, even when
+running with `--features real-vulkan`. In other words, this architecture
+already ends up — by accident of its design, not by intent — in the state
+Engram aims for: state stays resident in system RAM at all times, and the
+GPU is only ever touched transiently per operation. Adding an LRU
+eviction layer on top would have nothing to evict, so there would be no
+measurable effect to report (we are not going to claim a benefit we
+cannot measure). See the 2026-08-08 CLAUDE.md HANDOFF entry for the exact
+code paths read.
+
+### Classification vs. generation — which to use
+
+`/v1/chat` (classification) and `/v1/generate` (generation) serve different
+purposes and are deliberately not merged: `/v1/chat` only routes to canned
+replies and is lightweight/fast (a single embedding forward pass);
+`/v1/generate` runs the full GPT-2 124M model (548MB of weights) and is
+heavier but produces genuine free-form text. Pick whichever fits the use
+case.
+
+## Speech recognition (`POST /v1/transcribe`, whisper.cpp CLI, added 2026-08-29)
+
+open-english's speech recognition was originally limited to the browser's
+Web Speech API. In-browser Whisper (transformers.js, "P2-α") was added,
+but is bounded by the user's device GPU/NPU/CPU. P2-β lets the user's own
+PC — which is already running `aruaru-llm` — do the transcription with a
+larger Whisper model via `POST /v1/transcribe`. Canonical record:
+`open-english/docs/SPEECH_RECOGNITION_REDESIGN.md` (§P2-β).
+
+**Implementation (2026-08-29 pivot)**: the original plan was to link
+`whisper-rs` (Rust bindings to whisper.cpp) directly, but `whisper-rs-sys`
+has a **known blocker on Windows/MSVC** — bindgen emits glibc-specific
+types and the `whisper_full_params` size assertion underflows
+(`1_usize - 264_usize overflow`); re-research confirmed this reproduces on
+`whisper-rs 0.16.0` and is **not** fixed by
+`WHISPER_DONT_GENERATE_BINDINGS=1` (upstream issue 2026-04-21, no fix
+yet). Since open-english targets Windows, the direct-link approach can't
+work. Instead we **spawn whisper.cpp's official prebuilt CLI
+(`whisper-cli` / legacy `main`) as a subprocess** — the same pattern this
+codebase already uses for `pg_dump` / `Expand-Archive` / `adb`. No C++
+link, no bindgen, and the CLI's chosen GPU backend is used as-is. **No
+Cargo feature** — with no compile-time dependency it's just part of the
+default build.
+
+- **Enable**: drop two files in place (no rebuild).
+  1. whisper.cpp's [prebuilt `whisper-cli`](https://github.com/ggml-org/whisper.cpp/releases)
+     at `<crate>/models/whisper/whisper-cli` (`whisper-cli.exe` on
+     Windows), or point `ARUARU_LLM_WHISPER_CLI` at it.
+  2. a GGML model (`ggml-base.bin` = fast/modest, `ggml-large-v3-turbo` =
+     best; neither is bundled) at `<crate>/models/whisper/ggml-base.bin`,
+     or `ARUARU_LLM_WHISPER_MODEL`.
+- **Without them**: `POST /v1/transcribe` returns `503` + a link to
+  whisper.cpp releases.
+- **Status**: `GET /v1/runtime` → `whisper` block (`available`,
+  `cli_present`, `model_present`, `cli_path`, `model_path`, `detail`).
+- **Tuning**: `ARUARU_LLM_WHISPER_TIMEOUT_SECS` (default 300) caps the
+  subprocess wall-clock.
+- **Honest disclosure / verification**: `cargo build --release` succeeds;
+  `cargo test --release` — **100 passed** (7 new `transcribe` tests: WAV
+  RIFF header, whisper-cli JSON parsing, missing-CLI/model errors, env
+  overrides). **End-to-end with a real `whisper-cli` + real GGML model is
+  not yet verified** (this dev box has neither) — next iteration will set
+  both up and exercise `POST /v1/transcribe` over real HTTP.
+
+## "Shadow clone" (分身の術) architecture
+
+Following the same design as `open-web-server`: a single running instance
+is shared by multiple domains, with no per-domain install required.
+Management is intended to happen from [open-easy-web](https://github.com/aon-co-jp/open-easy-web)
+(that integration is not yet wired up). See [CLAUDE.md](CLAUDE.md) for details.
+
+## Tech stack
+
+Rust + [RPoem](https://github.com/aon-co-jp/RPoem) (`open-runo-poem-compat`,
+a Poem-API-compatible facade implemented directly on tokio/hyper — no
+dependency on the real [Poem](https://github.com/poem-web/poem) crate,
+migrated 2026-07-31) + [open-cuda](https://github.com/aon-co-jp/open-cuda).
+No DB dependency, single self-contained binary. Usable from Rust or any
+other language over plain HTTP (this service is the HTTP-serving front
+door for Python-AI-library Rust ports — `opencuda-bert`/`opencuda-llm`/
+`opencuda-whisper`, i.e. Transformers/vLLM/Whisper equivalents).
+
+See [CLAUDE.md](CLAUDE.md) for the design philosophy and
+[PORTING.md](PORTING.md) for how to port these patterns elsewhere.
+
+## Install
+
+As of 2026-07-23, `install.sh` (Linux, registers a systemd service),
+`install.ps1` (Windows, prints Windows service registration steps), and
+`.github/workflows/release.yml` (builds Linux x86_64 / Windows x86_64
+binaries on every tag push and attaches them to
+[GitHub Releases](https://github.com/aon-co-jp/aruaru-llm/releases)) were
+added. **Honest disclosure**: at startup this binary needs the 470MB+
+`multilingual-e5-small` model weights (Hugging Face, MIT license) fetched
+separately — not bundled with the installer for licensing reasons; see
+`install.sh`/`install.ps1` for the download command. The build has a
+sibling path dependency on `../open-cuda`, so building from source requires
+cloning `open-cuda` into an adjacent directory (CI does this
+automatically via `release.yml`). **Added 2026-07-25**: `/v1/generate`
+(GPT-2 124M generation) additionally requires `config.json` /
+`model.safetensors` (548MB) / `tokenizer.json`
+(`openai-community/gpt2`, from Hugging Face) under
+`../open-cuda/crates/opencuda-llm/models/gpt2/` (override the path with the
+`ARUARU_LLM_GPT2_DIR` env var). If missing, only `/v1/generate` returns 503
+— `/v1/chat` and the rest of the service keep working normally
+(availability-first design, same philosophy as `bow_fallback`).
+
+```
+curl -fsSL https://github.com/aon-co-jp/aruaru-llm/releases/latest/download/aruaru-llm-linux-x86_64.tar.gz | tar xz
+sudo ./install.sh
+```
+
+## Related projects
+
+- [open-cuda](https://github.com/aon-co-jp/open-cuda) — GPU runtime (the SET pairing)
+- [e-gov.info](https://github.com/aon-co-jp/e-gov) — first intended caller
+- [open-raid-z](https://github.com/aon-co-jp/open-raid-z) — canonical dev-policy source
+
+
+---
+
+## Update 2026-08-23 — `GET /v1/runtime` now reports the CPU SIMD path
+
+CPU inference GEMM is SIMD-dispatched through `opencuda-blas`, but there
+was no way to see *which combination of instruction sets* was actually
+selected. The `/v1/runtime` response now includes a `cpu_simd` object,
+with detection provided by the shared
+[`open-cpu`](https://github.com/aon-co-jp/open-cpu) crate. Paths are
+chosen by **combinations** of instruction sets (AVX2+FMA3,
+AVX-512F+BW+VNNI, …), not by single flags.
+
+Verified by actually starting the server and running
+`curl http://127.0.0.1:4600/v1/runtime` on the development machine
+(Ryzen 9 3950X, Zen 2):
+
+```json
+"cpu_simd": {
+  "features": "avx2+fma3+sse2",
+  "isa_profile": "avx2+fma3",
+  "avx2_fma_path": true,
+  "vnni_path": false,
+  "avx512_opt_in": false
+}
+```
+
+**Honest disclosure**: this endpoint only reports; it accelerates nothing.
+The actual speedup is the earlier CPU inference SIMD work (AVX2+FMA3,
+measured 3.34x). This change aligned that path's selection criteria with
+`open-cpu`'s combination checks and made them visible. **The int8 VNNI
+path is still unverified on real hardware** — this CPU does not have VNNI.
+
+## Better Japanese knowledge search, AI-comment learning and automatic GitHub backup (2026-10-08)
+- **Japanese search**: `words()` in `knowledge.rs` now compares runs of CJK characters as overlapping 2-character fragments (bigrams); alphanumeric words behave as before. Previously a Japanese sentence collapsed into one token and was almost never matched. 3 tests pass (`cargo test knowledge::`).
+- **Learning**: the PHP of `audiocafe.tokyo` teaches verified prices, corrections of the AI's mistakes and the rule "never guess prices" via `POST /v1/knowledge/add` (23 of 24 AI-written prices disagreed with the real ones).
+- **Automatic GitHub backup**: `knowledge-sync-push` (every 6 h and right after the PHP crawl) saves to `open-english/data/knowledge/knowledge.json`; `sync_from_remote` restores it at start-up. Restore test on an empty store passed (19 entries in 18 s).
+- **Moving servers**: knowledge restores itself from GitHub. Only the API keys (`.env.providers` etc.) must be placed by hand. The real systemd files are in `deploy/vps/` of `audiocafe-tokyo`.
+- Note: knowledge is stored in a public repository, so only put publishable content in it.
+
+## JSON handling policy: use `parse_secure_sonic` (fast type + secure) and `sonic-rs` everywhere they can be used (2026-10-14, user instruction)
+The source of truth is [`RS-JSON`](https://github.com/aon-co-jp/RS-JSON) (`README.md`, `PORTING.md`).
+
+**Policy**: wherever JSON is read, use `parse_secure_sonic` from `rust-json` (RS-JSON, the `fast` feature; the result is `sonic_rs::Value`) **everywhere it can be used**.
+Use `sonic-rs` directly where possible too (e.g. reading into typed structs). Where it cannot be used, use `parse_secure` (result: `serde_json::Value`).
+Untrusted input from outside (HTTP bodies, files over the network, uploads) **must always be read with size / depth / duplicate-key limits**.
+
+**Measured (7 MB, 40,000 records)**: `serde_json` 200 ms / `parse_secure` 217 ms / **`parse_secure_sonic` 83 ms (about 2.4x faster, with the defences)** / raw `sonic-rs` 33 ms (about 6x, no defences).
+Reading into `serde_json::Value` gives almost no speed-up even with SIMD (188 ms). **The speed comes from the value type that packs the result into contiguous memory.**
+
+**Where it can / cannot be used**
+- ✅ Read-heavy code that parses large or frequent JSON (cache JSON, config, API responses, logs, indexes).
+- ✅ Entrances for outside input (the goal there is defence rather than speed; `parse_secure` is fine).
+- ⚠️ Existing code that passes `serde_json::Value` between functions needs its type changed to `sonic_rs::Value` (methods from `JsonValueTrait` / `JsonContainerTrait`). Reading into `serde_json::Value` without that change is not faster.
+- ❌ WASM (`rust_json::light`, zero dependencies) and the JSON handling on the PHP / JavaScript side (Rust components cannot be used there).
+- Note: the `sonic-rs` dependency uses `unsafe` internally (our own code has none). For small JSON (a few KB) the difference is not noticeable; do speed-motivated rewrites where measurements show a benefit.
+
+**Adoption**: in `Cargo.toml`, `rust-json = { path = "../RS-JSON", features = ["fast"] }`. Example in `RS-JSON/README.md`.
+
+**Status in this repository**: `knowledge::sync_from_remote` (outside import) already uses `parse_secure`. Everything else is not yet applied (policy only). Next targets: search indexes and JSON loaded at start-up.
