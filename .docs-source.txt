@@ -1,3 +1,3 @@
 source: aon-co-jp/aruaru-llm
-commit: d1b0f82088e8c5f80c41276225a16aaa5f25eaf1
-updated: 2026-11-20T05:18:09Z
+commit: 330f08abfe7ad31e6c1a64ad2e25abce86eb5a94
+updated: 2026-11-20T22:35:06Z
